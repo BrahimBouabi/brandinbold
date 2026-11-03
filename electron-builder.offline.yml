@@ -1,0 +1,29 @@
+appId: com.brandinbold.app
+productName: Brandinbold
+artifactName: Brandinbold-0.1.0-offline-${arch}
+directories:
+  output: release
+files:
+  - out/**
+  - package.json
+asarUnpack:
+  - "**/*.node"
+  - "node_modules/camoufox/**"
+  - "node_modules/fpgen-js/**"
+  - "node_modules/playwright-core/**"
+  - "node_modules/python-random/**"
+  - "node_modules/impit/**"
+# TASK 9 Étape 1.3: offline "Fat DMG" — the pre-fetched engine (browsers,
+# fpgen model, geoip, UBO addon) ships inside the app bundle and is cloned
+# to the engine home on first start (zero network).
+extraResources:
+  - from: resources/badge-extension
+    to: badge-extension
+  - from: build/engine-bundle
+    to: engine-bundle
+mac:
+  target: dmg
+  identity: null
+  category: public.app-category.productivity
+  darkModeSupport: true
+  icon: build/icon.icns

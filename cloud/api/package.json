@@ -1,0 +1,30 @@
+{
+  "name": "brandinbold-cloud-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Brandinbold cloud API — Fastify + PostgreSQL (auth, profile/proxy/group sync, session archives)",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --outfile=dist/index.js --external:pg --external:bcrypt",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.1",
+    "bcryptjs": "^2.4.3",
+    "drizzle-orm": "^0.36.4",
+    "fastify": "^5.12.7",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/node": "^22.10.0",
+    "drizzle-kit": "^0.28.0",
+    "esbuild": "^0.24.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

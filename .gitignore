@@ -1,0 +1,37 @@
+# dependencies
+node_modules/
+
+# build outputs
+out/
+release/
+dist/
+dist-tmp/
+build/engine-bundle/
+
+# local rollback snapshots (kept on disk, never pushed)
+versions/
+
+# test artifacts
+test-results/
+
+# large binaries
+*.dmg
+*.tar.gz
+*.exe
+*.AppImage
+
+# logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# env — never commit secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# TS build artifacts
+*.tsbuildinfo

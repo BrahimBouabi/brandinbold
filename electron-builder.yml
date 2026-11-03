@@ -1,0 +1,23 @@
+appId: com.brandinbold.app
+productName: Brandinbold
+directories:
+  output: release
+files:
+  - out/**
+  - package.json
+asarUnpack:
+  - "**/*.node"
+  - "node_modules/camoufox/**"
+  - "node_modules/fpgen-js/**"
+  - "node_modules/playwright-core/**"
+  - "node_modules/python-random/**"
+  - "node_modules/impit/**"
+extraResources:
+  - from: resources/badge-extension
+    to: badge-extension
+mac:
+  icon: build/icon.icns
+  target: dmg
+  identity: null
+  category: public.app-category.productivity
+  darkModeSupport: true

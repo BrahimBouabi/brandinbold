@@ -1,0 +1,32 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { font: 13px -apple-system, system-ui, sans-serif; background: #14161c; color: #d7dbe2; margin: 0; padding: 14px; min-width: 300px; }
+    h1 { font-size: 13.5px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+    .logo { width: 18px; height: 18px; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; }
+    .logo svg { width: 11px; height: 11px; }
+    h2 { font-size: 12px; margin: 14px 0 6px; color: #9aa3af; font-weight: 600; }
+    .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+    .label { color: #9aa3af; width: 90px; flex: none; }
+    .chip { background: #1d4ed8; color: #fff; border-radius: 5px; padding: 2px 8px; font-size: 12px; cursor: pointer; word-break: break-all; }
+    .chip:hover { background: #2563eb; }
+    footer { margin-top: 14px; text-align: center; color: #9aa3af; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <h1><span class="logo" id="badge-logo"><svg viewBox="0 0 1080 1080"><path fill="#fff" d="M504.621 178.726 C527.414 141.183 564.563 112.009 610.117 112.023 L841.789 112.091 C886.711 112.104 925.528 141.234 946.148 178.993 L1046.674 363.077 C1070.015 405.82 1075.051 457.072 1047.553 499.446 L789.819 896.624 C762.305 939.025 712.641 968.407 661.616 968.467 L415.076 968.753 C353.607 968.824 303.876 931.101 273.231 880.637 L29.742 479.676 C7.25 442.639 9.564 393.89 29.993 356.847 L150.839 137.715 C160.117 120.893 178.081 111.135 195.746 111.248 C214.956 111.371 230.531 121.424 240.831 138.32 L662.946 830.765 C671.653 845.047 689.152 850.727 702.801 850.283 C719.667 849.735 731.761 841.126 741.168 826.847 L977.241 468.502 C987.044 453.622 991.711 436.499 982.899 419.918 L875.927 218.623 C867.713 203.167 854.288 193.948 838.109 192.849 C821.456 191.718 804.89 198.769 795.476 214.127 L623.903 494.004 C613.898 510.324 595.368 516.488 578.049 515.707 C560.52 514.917 546.17 505.079 536.382 489.036 L443.047 336.049 C432.081 318.075 432.187 298.035 442.965 280.282 Z"/></svg></span><span id="badge-name">Profile</span></h1>
+  <h2>🌐 Location and Region</h2>
+  <div class="row"><span class="label">Timezone:</span><span class="chip" id="v-timezone">—</span></div>
+  <div class="row"><span class="label">Coordinates:</span><span class="chip" id="v-coords">—</span></div>
+  <h2>🔒 Network and Proxy</h2>
+  <div class="row"><span class="label">Visible IP:</span><span class="chip" id="v-ip">—</span></div>
+  <h2>Profile</h2>
+  <div class="row"><span class="label">Profile Name:</span><span class="chip" id="v-name">—</span></div>
+  <div class="row"><span class="label">Profile ID:</span><span class="chip" id="v-id">—</span></div>
+  <footer>Click on value to copy it</footer>
+  <script src="data.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

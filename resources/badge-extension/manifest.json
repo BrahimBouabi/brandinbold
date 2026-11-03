@@ -1,0 +1,42 @@
+{
+  "manifest_version": 2,
+  "name": "Brandinbold Profile Badge",
+  "version": "1.0.0",
+  "description": "Shows the Brandinbold profile identity in the toolbar. Data stays inside the extension \u2014 never exposed to web pages.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "profile-badge@brandinbold.app",
+      "strict_min_version": "115.0"
+    }
+  },
+  "permissions": [
+    "clipboardWrite",
+    "tabs",
+    "webRequest",
+    "webRequestBlocking",
+    "http://badge-verify.invalid/*"
+  ],
+  "browser_action": {
+    "default_title": "Brandinbold",
+    "default_popup": "popup.html",
+    "default_area": "navbar"
+  },
+  "background": {
+    "scripts": [
+      "data.js",
+      "background.js"
+    ],
+    "persistent": true
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "cs.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
+}

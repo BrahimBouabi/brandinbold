@@ -1,0 +1,47 @@
+{
+  "name": "brandinbold",
+  "productName": "Brandinbold",
+  "version": "0.1.0",
+  "description": "Local anti-detect browser profile manager",
+  "main": "out/main/index.js",
+  "author": "brahim",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "postinstall": "electron-builder install-app-deps",
+    "package": "electron-vite build && electron-builder --mac dmg",
+    "test:fingerprint": "node scripts/test-fingerprint.mjs",
+    "package:offline": "node scripts/prepare-engine-bundle.mjs && electron-vite build && electron-builder --mac dmg --config electron-builder.offline.yml"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "camoufox": "^0.5.8",
+    "fastify": "^5.12.7",
+    "http-proxy-agent": "^9.1.0",
+    "playwright-core": "^1.54.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "socks-proxy-agent": "^10.1.0",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@ant-design/icons": "^6.3.4",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-react": "^6.1.2",
+    "antd": "^6.6.8",
+    "electron": "^45.1.0",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
+    "i18next": "^26.5.11",
+    "react-i18next": "^17.1.9",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  }
+}
