@@ -31,5 +31,9 @@
 
 | v2026-11-03-task10-step2.2-cloud-api | 2026-11-03 | TASK 10 Étape 2.2: Cloud API complète (JWT auth register/login/refresh/me, sync push/pull ownership-safe, plan limits, session archives gzip ≤50MB) + Docker Compose (postgres 16 + api + web, migrations boot) + test automatisé 13/13 PASS. Fixes: ownership-aware upserts (sécurité multi-user), .dockerignore (binaires hôte), TLA→main() cjs | versions/v2026-11-03-task10-step2.2-cloud-api.tar.gz |
 
+| v2026-11-03-task10-step2.3-baseline | 2026-11-03 | TASK 10 Étape 2.3 baseline (avant cloud/web réel) | versions/v2026-11-03-task10-step2.3-baseline.tar.gz |
+
+| v2026-11-03-task10-step2.3-web | 2026-11-03 | TASK 10 Étape 2.3: cloud/web réel — Landing (hero/features/plans/download), Register/Login (JWT localStorage), Dashboard (plan+quota, counts, name/password change). API: PATCH me + change-password. Captures 34-37 | versions/v2026-11-03-task10-step2.3-web.tar.gz |
+
 ## Rollback
 `tar -xzf versions/<fichier>.tar.gz -C . --overwrite` puis `npm install` (si package.json changé) et `npx electron-vite build`.

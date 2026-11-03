@@ -43,3 +43,17 @@ export async function refresh(refreshToken: string): Promise<AuthResult> {
   const u = toUser(found[0])
   return { token: signToken(tu), refreshToken: signRefreshToken(tu), user: u }
 }
+
+export async function updateName(userId: string, name: string): Promise<void> {
+  await db.update(users).set({ name }).where(eq(users.id, userId))
+}
+
+export async function changePassword(userId: string, currentPassword: string, newPassword: string): Promise<void> {
+  const rows = await db.select().from(users).where(eq(users.id, userId))
+  if (!rows.length) throw Object.assign(new Error('User not found'), { statusCode: 404 })
+  if (!verifyPassword(currentPassword, rows[0].passwordHash)) {
+    throw Object.assign(new Error('Current password is incorrect'), { statusCode: 401 })
+  }
+  if (newPassword.length < 8) throw Object.assign(new Error('Password must be at least 8 characters'), { statusCode: 400 })
+  await db.update(users).set({ passwordHash: hashPassword(newPassword) }).where(eq(users.id, userId))
+}

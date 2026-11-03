@@ -4,7 +4,7 @@ import { eq } from 'drizzle-orm'
 import { MIGRATION_SQL } from './db/migrate.js'
 import { db, pool } from './db/index.js'
 import { users } from './db/schema.js'
-import { register, login, refresh } from './routes/auth.js'
+import { register, login, refresh, updateName, changePassword } from './routes/auth.js'
 import { pull, push, deleteProfile, putSessionState, getSessionState, userExists } from './routes/sync.js'
 import { authHook } from './lib/auth.js'
 
@@ -85,6 +85,27 @@ app.get('/api/auth/me', async (req, reply) => {
   if (!rows.length) return reply.code(401).send({ error: 'User not found' })
   const u = rows[0]
   return { user: { id: u.id, email: u.email, name: u.name, plan: u.plan, maxProfiles: u.maxProfiles } }
+})
+
+app.patch('/api/auth/me', async (req, reply) => {
+  const user = authHook(req)
+  if (!user) return reply.code(401).send({ error: 'Unauthorized' })
+  const body = (req.body ?? {}) as { name?: string }
+  if (!body.name?.trim()) return reply.code(400).send({ error: 'Name required' })
+  await updateName(user.sub, body.name.trim())
+  return { ok: true }
+})
+
+app.post('/api/auth/change-password', async (req, reply) => {
+  const user = authHook(req)
+  if (!user) return reply.code(401).send({ error: 'Unauthorized' })
+  const body = (req.body ?? {}) as { currentPassword?: string; newPassword?: string }
+  try {
+    await changePassword(user.sub, body.currentPassword ?? '', body.newPassword ?? '')
+    return { ok: true }
+  } catch (e: any) {
+    return reply.code(e.statusCode ?? 500).send({ error: e.message })
+  }
 })
 
 app.get('/api/sync/pull', async (req) => {
