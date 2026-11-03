@@ -1,0 +1,38 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: brandinbold
+      POSTGRES_PASSWORD: brandinbold
+      POSTGRES_DB: brandinbold
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U brandinbold"]
+      interval: 3s
+      timeout: 3s
+      retries: 15
+
+  api:
+    build: ./cloud/api
+    environment:
+      DATABASE_URL: postgres://brandinbold:brandinbold@postgres:5432/brandinbold
+      JWT_SECRET: dev-secret-change-me
+      PORT: "8787"
+    ports:
+      - "8787:8787"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build: ./cloud/web
+    ports:
+      - "5173:80"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

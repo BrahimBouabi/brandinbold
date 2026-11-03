@@ -27,5 +27,9 @@
 
 | v2026-11-03-task10-step2.1-baseline | 2026-11-03 | TASK 10 Étape 2.1 baseline (avant git init + workspace cloud) | versions/v2026-11-03-task10-step2.1-baseline.tar.gz |
 
+| v2026-11-03-task10-step2.2-baseline | 2026-11-03 | TASK 10 Étape 2.2 baseline (avant cloud api + docker) | versions/v2026-11-03-task10-step2.2-baseline.tar.gz |
+
+| v2026-11-03-task10-step2.2-cloud-api | 2026-11-03 | TASK 10 Étape 2.2: Cloud API complète (JWT auth register/login/refresh/me, sync push/pull ownership-safe, plan limits, session archives gzip ≤50MB) + Docker Compose (postgres 16 + api + web, migrations boot) + test automatisé 13/13 PASS. Fixes: ownership-aware upserts (sécurité multi-user), .dockerignore (binaires hôte), TLA→main() cjs | versions/v2026-11-03-task10-step2.2-cloud-api.tar.gz |
+
 ## Rollback
 `tar -xzf versions/<fichier>.tar.gz -C . --overwrite` puis `npm install` (si package.json changé) et `npx electron-vite build`.

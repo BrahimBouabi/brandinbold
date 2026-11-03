@@ -1,0 +1,55 @@
+import { pgTable, uuid, text, integer, boolean, timestamp, customType } from 'drizzle-orm/pg-core'
+
+/** PostgreSQL bytea ↔ Node Buffer */
+export const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType: () => 'bytea'
+})
+
+export const users = pgTable('users', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  email: text('email').notNull().unique(),
+  name: text('name').notNull(),
+  passwordHash: text('password_hash').notNull(),
+  plan: text('plan').notNull().default('free'), // 'free' | 'pro' | 'team'
+  maxProfiles: integer('max_profiles').notNull().default(3),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+})
+
+/** Synced profile documents — the full Brandinbold Profile JSON. */
+export const profiles = pgTable('profiles', {
+  id: uuid('id').primaryKey(), // client-generated id (Brandinbold profile.id)
+  userId: uuid('user_id').notNull(),
+  name: text('name').notNull(),
+  os: text('os').notNull().default('macos'),
+  json: text('json').notNull(), // full Profile document
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+})
+
+export const groups = pgTable('groups', {
+  id: uuid('id').primaryKey(),
+  userId: uuid('user_id').notNull(),
+  name: text('name').notNull(),
+  pinned: boolean('pinned').notNull().default(false),
+  color: text('color'),
+  description: text('description'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+})
+
+export const proxies = pgTable('proxies', {
+  id: uuid('id').primaryKey(),
+  userId: uuid('user_id').notNull(),
+  json: text('json').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+})
+
+/** Roaming session archives: the vital profile files (cookies, sessionstore,
+ *  places), gzip-tarred by the desktop app. One archive per profile. */
+export const sessionArchives = pgTable('session_archives', {
+  profileId: uuid('profile_id').primaryKey(),
+  userId: uuid('user_id').notNull(),
+  data: bytea('data').notNull(),
+  size: integer('size').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+})

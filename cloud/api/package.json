@@ -20,8 +20,10 @@
     "pg": "^8.13.1"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
     "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^22.10.0",
+    "@types/pg": "^8.23.1",
     "drizzle-kit": "^0.28.0",
     "esbuild": "^0.24.0",
     "tsx": "^4.19.2",
