@@ -51,3 +51,7 @@
 | v2026-11-04-stepB-baseline | 2026-11-04 | Step B baseline (avant correctifs sync cloud & logout) | versions/v2026-11-04-stepB-baseline.tar.gz |
 
 | v2026-11-04-stepB-sync-fixes | 2026-11-04 | Step B: sync cloud complet — tombstones/suppressions (profiles/groups/proxies) avec file d'attente offline persistée (cloud_pending_deletes) et résurrection au restore, newer-wins bidirectionnel (profiles/groups/proxies) avec conservation des updatedAt distants, logout complet (purge cloud_refresh_token + file d'attente), marqueurs d'horloge serveur pour les archives de session (anti clock-skew) + upload auto à la fermeture fenêtre navigateur. Tests: typecheck OK, test-cloud 16/16 PASS | versions/v2026-11-04-stepB-sync-fixes.tar.gz |
+
+| v2026-11-04-stepC-baseline | 2026-11-04 | Step C baseline (avant mise à jour finale HANDOFF + régression) | versions/v2026-11-04-stepC-baseline.tar.gz |
+
+| v2026-11-04-stepC-handoff-complete | 2026-11-04 | Step C: BRANDINBOLD_HANDOFF.md mis à jour (TASK 10 100 % complet incl. Étapes 2.4/2.5 + Step A/B, 16/16 tests cloud, arbre fichiers et compteurs corrigés) + suite de régression (typecheck, electron-vite build, test-cloud 16/16 PASS, test-cache-purge PASS) | versions/v2026-11-04-stepC-handoff-complete.tar.gz |
