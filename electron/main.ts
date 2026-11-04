@@ -4,6 +4,7 @@ import { setupEngineHome } from './engine/camoufox/engineHome'
 import { readFile, writeFile, readdir, rm, cp, mkdir } from 'fs/promises'
 import { execFile } from 'child_process'
 import { engineHomeDir } from './engine/camoufox/engineHome'
+import { initCloud, cloudEnabled, cloudAuthed, cloudUser, cloudOfflineMode, doLogin, doRegister, doLogout, cloudPullAndMerge, scheduleCloudPush, cloudMaybeRestoreSession, cloudUploadSession } from './cloud/cloudMain'
 import { getProfileDiskInfo, purgeTransientCaches } from './launcher/profileCache'
 import { mkdirSync } from 'fs'
 import { existsSync, readFileSync } from 'fs'
@@ -101,11 +102,13 @@ function createWindow(): void {
 
 // ---------- profiles ----------
 ipcMain.handle('profiles:list', () => store.list())
-ipcMain.handle('profiles:create', (_e, name: string) => store.create(name || 'New profile'))
-ipcMain.handle('profiles:save', (_e, profile: any) => store.save(profile))
+ipcMain.handle('profiles:create', (_e, name: string) => { const p = store.create(name || 'New profile'); scheduleCloudPush(); return p })
+ipcMain.handle('profiles:save', (_e, profile: any) => { const saved = store.save(profile); scheduleCloudPush(); return saved })
 ipcMain.handle('profiles:trash', (_e, id: string) => {
   if (registry.get(id)) throw new Error('Profile is running')
-  return store.trash(id)
+  const ok = store.trash(id)
+  scheduleCloudPush()
+  return ok
 })
 ipcMain.handle('profiles:restore', (_e, id: string) => store.restore(id))
 ipcMain.handle('profiles:purge', (_e, id: string) => {
@@ -121,13 +124,23 @@ ipcMain.handle('profiles:generate', async (_e, profile: any) => {
 ipcMain.handle('launch', async (_e, id: string) => {
   const profile = store.get(id)
   if (!profile) throw new Error('Profile not found')
+  // TASK 10: pull the cloud session archive if it is newer than local
+  await cloudMaybeRestoreSession(id, join(app.getPath('userData'), 'profiles', id))
   const result = await launcher.launch(profile)
   // persist any display-field sync from pinning
   const fresh = store.get(id)
   if (fresh?.fingerprint) store.save(syncDisplayFields(fresh, fresh.fingerprint))
   return result
 })
-ipcMain.handle('stop', (_e, id: string) => launcher.stop(id))
+ipcMain.handle('stop', async (_e, id: string) => {
+  const ok = await launcher.stop(id)
+  // TASK 10: upload the vital session files after a graceful stop
+  if (ok) {
+    const dir = join(app.getPath('userData'), 'profiles', id)
+    void cloudUploadSession(id, dir).catch(() => {})
+  }
+  return ok
+})
 ipcMain.handle('running:list', () => registry.listRunning())
 ipcMain.handle('status:get', (_e, id: string) => registry.status(id))
 
@@ -220,19 +233,19 @@ ipcMain.handle('profiles:purgeCache', async (_e, id?: string) => {
 
 // ---------- groups ----------
 ipcMain.handle('groups:list', () => store.listGroups())
-ipcMain.handle('groups:create', (_e, name: string, pinned = false, color?: string, description?: string) => store.createGroup(name, pinned, color, description))
-ipcMain.handle('groups:rename', (_e, id: string, name: string) => store.renameGroup(id, name))
+ipcMain.handle('groups:create', (_e, name: string, pinned = false, color?: string, description?: string) => { const g = store.createGroup(name, pinned, color, description); scheduleCloudPush(); return g })
+ipcMain.handle('groups:rename', (_e, id: string, name: string) => { store.renameGroup(id, name); scheduleCloudPush() })
 ipcMain.handle('groups:updateMeta', (_e, id: string, color: string, description: string) => {
   db_exec_group_meta(id, color, description)
 })
 ipcMain.handle('groups:pin', (_e, id: string, pinned: boolean) => store.setGroupPinned(id, pinned))
-ipcMain.handle('groups:delete', (_e, id: string) => store.deleteGroup(id))
+ipcMain.handle('groups:delete', (_e, id: string) => { store.deleteGroup(id); scheduleCloudPush() })
 
 // ---------- proxies ----------
 ipcMain.handle('proxies:list', () => store.listProxies())
-ipcMain.handle('proxies:create', (_e, data: any) => store.createProxy(data))
-ipcMain.handle('proxies:save', (_e, entry: any) => store.saveProxy(entry))
-ipcMain.handle('proxies:delete', (_e, id: string) => store.deleteProxy(id))
+ipcMain.handle('proxies:create', (_e, data: any) => { const x = store.createProxy(data); scheduleCloudPush(); return x })
+ipcMain.handle('proxies:save', (_e, entry: any) => { const x = store.saveProxy(entry); scheduleCloudPush(); return x })
+ipcMain.handle('proxies:delete', (_e, id: string) => { store.deleteProxy(id); scheduleCloudPush() })
 ipcMain.handle('proxies:test', async (_e, proxy: any) => checkProxy(proxy))
 
 // ---------- settings ----------
@@ -363,6 +376,35 @@ ipcMain.handle('backup:openFolder', async (_e, id: string) => {
   return dir
 })
 
+// ---------- cloud (TASK 10) ----------
+ipcMain.handle('cloud:status', () => ({
+  enabled: cloudEnabled(),
+  authed: cloudAuthed(),
+  user: cloudUser(),
+  offlineMode: cloudOfflineMode(),
+  apiUrl: store.getSettings().cloudApiUrl
+}))
+ipcMain.handle('cloud:login', async (_e, email: string, password: string) => {
+  const user = await doLogin(email, password)
+  scheduleCloudPush()
+  const summary = await cloudPullAndMerge()
+  push('cloud-event', '', 'synced')
+  return { user, summary }
+})
+ipcMain.handle('cloud:register', async (_e, email: string, name: string, password: string) => {
+  const user = await doRegister(email, name, password)
+  scheduleCloudPush()
+  return { user }
+})
+ipcMain.handle('cloud:logout', () => { doLogout(); return true })
+ipcMain.handle('cloud:offlineMode', (_e, v: boolean) => { store.saveSettings({ cloudOfflineMode: v }); return v })
+ipcMain.handle('cloud:syncNow', async () => {
+  const pulled = await cloudPullAndMerge()
+  scheduleCloudPush(0)
+  return pulled
+})
+ipcMain.handle('profiles:pushNow', () => { scheduleCloudPush(0); return true })
+
 // ---------- system ----------
 ipcMain.handle('system:info', () => ({
   apiPort: api?.currentPort ?? null,
@@ -376,6 +418,7 @@ app.whenReady().then(() => {
   if (engineHome.error) console.error('engine home setup failed:', engineHome.error)
   else if (engineHome.migrated) console.log('engine storage migrated to', engineHomeDir())
 
+  initCloud(store)
   applyEngineSetting()
   createWindow()
   // dev-only screenshot hook: REA_SHOT=/path.png captures the renderer and quits
@@ -392,6 +435,9 @@ app.whenReady().then(() => {
   )
   if (settings.automationEnabled) {
     void api.start(settings.automationPort).catch((e) => console.error('API failed:', e))
+  }
+  if (cloudEnabled() && cloudAuthed()) {
+    void cloudPullAndMerge().then((s) => s && console.log('cloud pull:', JSON.stringify(s.pulled)))
   }
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

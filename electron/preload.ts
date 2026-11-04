@@ -81,6 +81,17 @@ const api = {
     info: (): Promise<{ apiPort: number | null; version: string }> =>
       ipcRenderer.invoke('system:info')
   },
+  cloud: {
+    status: (): Promise<{ enabled: boolean; authed: boolean; user: any; offlineMode: boolean; apiUrl: string }> =>
+      ipcRenderer.invoke('cloud:status'),
+    login: (email: string, password: string): Promise<any> => ipcRenderer.invoke('cloud:login', email, password),
+    register: (email: string, name: string, password: string): Promise<any> =>
+      ipcRenderer.invoke('cloud:register', email, name, password),
+    logout: (): Promise<boolean> => ipcRenderer.invoke('cloud:logout'),
+    setOfflineMode: (v: boolean): Promise<boolean> => ipcRenderer.invoke('cloud:offlineMode', v),
+    syncNow: (): Promise<any> => ipcRenderer.invoke('cloud:syncNow'),
+    pushNow: (): Promise<boolean> => ipcRenderer.invoke('profiles:pushNow')
+  },
   onProfileEvent: (cb: (event: any) => void) => {
     const listener = (_e: unknown, event: any) => cb(event)
     ipcRenderer.on('profile-event', listener)

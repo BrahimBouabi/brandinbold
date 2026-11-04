@@ -13,7 +13,7 @@ import {
   ReloadOutlined,
   LogoutOutlined
 } from '@ant-design/icons'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useApp } from '../App'
 import { LANGUAGES } from '../i18n'
@@ -37,40 +37,27 @@ function Logo({ collapsed }: { collapsed: boolean }) {
 function PlanCard() {
   const { t } = useTranslation()
   const { profiles, settings } = useApp()
-  const max = settings.maxProfiles ?? 3
+  const [cloudUser, setCloudUser] = useState<{ plan: string; maxProfiles: number } | null>(null)
+  useEffect(() => {
+    void (window as any).rea.cloud.status().then((s: any) => {
+      if (s.authed && s.user) setCloudUser({ plan: s.user.plan, maxProfiles: s.user.maxProfiles })
+    })
+  }, [])
+  const max = cloudUser?.maxProfiles ?? settings.maxProfiles ?? 3
+  const planName = cloudUser?.plan ?? 'local'
   const used = Math.min(profiles.length, max)
   const pct = Math.min(100, Math.round((used / max) * 100))
   return (
-    <div
-      style={{
-        margin: '10px 10px 8px',
-        padding: '12px',
-        borderRadius: 12,
-        border: '1px solid rgba(124,58,237,0.25)',
-        background: 'rgba(124,58,237,0.06)'
-      }}
-    >
-      <div style={{ height: 4, borderRadius: 2, background: 'rgba(124,58,237,0.2)', marginBottom: 10 }}>
-        <div style={{ width: `${pct}%`, height: 4, borderRadius: 2, background: BRAND.accent }} />
+    <div style={{ margin: '10px 10px 8px', padding: '12px', borderRadius: 12, border: '1px solid rgba(137,82,239,0.25)', background: 'rgba(137,82,239,0.06)' }}>
+      <div style={{ height: 4, borderRadius: 2, background: 'rgba(137,82,239,0.2)', marginBottom: 10 }}>
+        <div style={{ width: `${pct}%`, height: 4, borderRadius: 2, background: '#8952ef' }} />
       </div>
-      <div style={{ fontWeight: 700, fontSize: 13 }}>{t('common.basePlan')}</div>
+      <div style={{ fontWeight: 700, fontSize: 13, textTransform: 'capitalize' }}>{planName} plan</div>
       <div style={{ fontSize: 12, opacity: 0.65, margin: '3px 0 9px' }}>
-        {t('common.profilesUsed', { used: used, max: max })}
+        {profiles.length} of {max} profiles used
       </div>
-      <button
-        className="upgrade-btn"
-        style={{
-          width: '100%',
-          borderRadius: 8,
-          border: '1px solid rgba(124,58,237,0.5)',
-          background: 'transparent',
-          color: BRAND.accent,
-          fontWeight: 600,
-          padding: '6px 0',
-          cursor: 'pointer'
-        }}
-      >
-        ♛ {t('common.upgradeNow')}
+      <button className="upgrade-btn" style={{ width: '100%', borderRadius: 8, border: '1px solid rgba(137,82,239,0.5)', background: 'transparent', color: '#8952ef', fontWeight: 600, padding: '6px 0', cursor: 'pointer' }}>
+        ♛ Upgrade now
       </button>
     </div>
   )
@@ -80,7 +67,18 @@ function UserBlock({ collapsed }: { collapsed: boolean }) {
   const { t } = useTranslation()
   const { settings, refresh } = useApp()
   const [langOpen, setLangOpen] = useState(false)
-  const user = settings.user ?? { name: 'Local User', email: '' }
+  const [cloud, setCloud] = useState<{ user: any; authed: boolean; offlineMode: boolean } | null>(null)
+
+  useEffect(() => {
+    void (window as any).rea.cloud.status().then(setCloud)
+  }, [])
+
+  const doLogout = async () => {
+    await (window as any).rea.cloud.logout()
+    window.location.reload()
+  }
+  const user = cloud?.user ?? settings.user ?? { name: 'Local User', email: '' }
+  const authed = !!cloud?.authed
   const initial = (user.name || 'U').charAt(0).toUpperCase()
 
   const setLang = async (code: string) => {
@@ -115,7 +113,7 @@ function UserBlock({ collapsed }: { collapsed: boolean }) {
       <MenuRow icon={<AppstoreOutlined />} label={t('common.checkForUpdates')} onClick={() => message.info(t('common.upToDate'))} />
       <MenuRow icon={<ReloadOutlined />} label={t('common.reinstallBrowser')} onClick={() => void rea.engine.install()} />
       <div style={{ height: 1, background: 'rgba(128,128,128,0.2)', margin: '6px 0' }} />
-      <MenuRow icon={<LogoutOutlined />} label={t('common.logout')} />
+      <MenuRow icon={<LogoutOutlined />} label={t('common.logout')} onClick={() => void doLogout()} />
     </div>
   )
 
@@ -143,6 +141,11 @@ function UserBlock({ collapsed }: { collapsed: boolean }) {
               <div style={{ fontSize: 11, opacity: 0.6, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {user.email}
               </div>
+              {authed ? (
+                <span style={{ fontSize: 9, color: '#8952ef', fontWeight: 700 }}>● CLOUD SYNC</span>
+              ) : (
+                <span style={{ fontSize: 9, color: '#6b7280' }}>LOCAL ONLY</span>
+              )}
             </div>
             <Typography.Text type="secondary" style={{ fontSize: 16 }}>⋮</Typography.Text>
           </>

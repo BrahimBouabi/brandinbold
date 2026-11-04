@@ -237,6 +237,8 @@ export interface AppSettings {
   maxBackups: number
   maxBackupSizeMb: number
   user: { name: string; email: string }
+  cloudApiUrl: string
+  cloudOfflineMode: boolean
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -266,7 +268,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   webcamByDefault: false,
   maxBackups: 10,
   maxBackupSizeMb: 100,
-  user: { name: 'Local User', email: 'local@brandinbold.app' }
+  user: { name: 'Local User', email: 'local@brandinbold.app' },
+  cloudApiUrl: 'http://localhost:8787',
+  cloudOfflineMode: false
 }
 
 export type ProfileEvent =

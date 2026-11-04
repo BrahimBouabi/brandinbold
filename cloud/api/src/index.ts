@@ -1,9 +1,9 @@
 import Fastify from 'fastify'
 import cors from '@fastify/cors'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
 import { MIGRATION_SQL } from './db/migrate.js'
 import { db, pool } from './db/index.js'
-import { users } from './db/schema.js'
+import { sessionArchives, users } from './db/schema.js'
 import { register, login, refresh, updateName, changePassword } from './routes/auth.js'
 import { pull, push, deleteProfile, putSessionState, getSessionState, userExists } from './routes/sync.js'
 import { authHook } from './lib/auth.js'
@@ -141,6 +141,17 @@ app.put('/api/profiles/:id/session-state', async (req, reply) => {
   } catch (e: any) {
     return reply.code(e.statusCode ?? 500).send({ error: e.message })
   }
+})
+
+app.get('/api/profiles/:id/session-state/meta', async (req, reply) => {
+  const user = (req as any).user as { sub: string }
+  const { id } = req.params as { id: string }
+  const rows = await db
+    .select()
+    .from(sessionArchives)
+    .where(and(eq(sessionArchives.profileId, id), eq(sessionArchives.userId, user.sub)))
+  if (!rows.length) return reply.code(404).send({ error: 'No session archive' })
+  return { updatedAt: rows[0].updatedAt, size: rows[0].size }
 })
 
 app.get('/api/profiles/:id/session-state', async (req, reply) => {

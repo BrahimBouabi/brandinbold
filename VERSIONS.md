@@ -35,5 +35,9 @@
 
 | v2026-11-03-task10-step2.3-web | 2026-11-03 | TASK 10 Étape 2.3: cloud/web réel — Landing (hero/features/plans/download), Register/Login (JWT localStorage), Dashboard (plan+quota, counts, name/password change). API: PATCH me + change-password. Captures 34-37 | versions/v2026-11-03-task10-step2.3-web.tar.gz |
 
+| v2026-11-03-task10-step2.4-baseline | 2026-11-03 | TASK 10 Étape 2.4 baseline (avant auth gate + sync Electron) | versions/v2026-11-03-task10-step2.4-baseline.tar.gz |
+
+| v2026-11-03-task10-step2.4-auth-gate-sync | 2026-11-03 | TASK 10 Étape 2.4: auth gate Electron (login/register/offline bypass), cloud sync bidirectionnel (pull merge au start, push debounced aux mutations, session archives upload au stop / restore au launch), Sidebar live user + plan cloud | versions/v2026-11-03-task10-step2.4-auth-gate-sync.tar.gz |
+
 ## Rollback
 `tar -xzf versions/<fichier>.tar.gz -C . --overwrite` puis `npm install` (si package.json changé) et `npx electron-vite build`.

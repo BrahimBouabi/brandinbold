@@ -5,6 +5,7 @@ import type { AppSettings, Group, Profile, ProfileStatus, ProxyEntry } from '@sh
 import { darkTheme, lightTheme } from './theme'
 import './i18n'
 import { Sidebar, ChatButton } from './components/Sidebar'
+import { AuthGate } from './components/AuthGate'
 import { ProfilesPage } from './pages/ProfilesPage'
 import { ProxiesPage } from './pages/ProxiesPage'
 import { ProxyShopPage } from './pages/ProxyShopPage'
@@ -45,6 +46,7 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [statuses, setStatuses] = useState<Record<string, ProfileStatus>>({})
   const [apiPort, setApiPort] = useState<number | null>(null)
+  const [authState, setAuthState] = useState<'checking' | 'gate' | 'ready'>('checking')
   const [systemDark, setSystemDark] = useState<boolean>(
     window.matchMedia('(prefers-color-scheme: dark)').matches
   )
@@ -111,6 +113,28 @@ export default function App() {
     }),
     [profiles, deleted, groups, proxies, settings, statuses, apiPort, refreshProfiles, refreshGroups, refreshProxies, refreshSettings, refreshAll]
   )
+
+  if (authState === 'gate') {
+    return (
+      <ConfigProvider
+        theme={{
+          token: { colorPrimary: '#8952ef', borderRadius: 8, fontFamily: '-apple-system, system-ui' },
+          algorithm: antdTheme.darkAlgorithm
+        }}
+      >
+        <AuthGate
+          onAuthed={async () => {
+            setAuthState('ready')
+            await refreshAll()
+          }}
+          onOffline={async () => {
+            setAuthState('ready')
+            await refreshAll()
+          }}
+        />
+      </ConfigProvider>
+    )
+  }
 
   return (
     <ConfigProvider theme={isDark ? darkTheme : lightTheme} componentSize="middle">

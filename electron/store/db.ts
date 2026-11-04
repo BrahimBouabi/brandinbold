@@ -234,6 +234,15 @@ export class ProfileStore {
     return g
   }
 
+  upsertGroup(g: Group): void {
+    this.db
+      .prepare(
+        'INSERT INTO groups (id, name, pinned, color, description, created_at) VALUES (?, ?, ?, ?, ?, ?) ' +
+          'ON CONFLICT(id) DO UPDATE SET name = excluded.name, pinned = excluded.pinned, color = excluded.color, description = excluded.description'
+      )
+      .run(g.id, g.name, g.pinned ? 1 : 0, g.color ?? null, g.description ?? null, g.createdAt)
+  }
+
   renameGroup(id: string, name: string): void {
     this.db.prepare('UPDATE groups SET name = ? WHERE id = ?').run(name, id)
   }
