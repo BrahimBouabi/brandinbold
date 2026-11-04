@@ -39,5 +39,7 @@
 
 | v2026-11-03-task10-step2.4-auth-gate-sync | 2026-11-03 | TASK 10 Étape 2.4: auth gate Electron (login/register/offline bypass), cloud sync bidirectionnel (pull merge au start, push debounced aux mutations, session archives upload au stop / restore au launch), Sidebar live user + plan cloud | versions/v2026-11-03-task10-step2.4-auth-gate-sync.tar.gz |
 
+| v2026-11-03-task10-step2.5-baseline | 2026-11-04 | TASK 10 Étape 2.5 baseline (avant Railway + guides) | versions/v2026-11-03-task10-step2.5-baseline.tar.gz |
+
 ## Rollback
 `tar -xzf versions/<fichier>.tar.gz -C . --overwrite` puis `npm install` (si package.json changé) et `npx electron-vite build`.

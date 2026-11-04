@@ -1,0 +1,12 @@
+version: 1
+
+# Railway config for the cloud/web service (static build via nginx)
+# Set Root Directory = cloud/web in the Railway dashboard for this service.
+
+build:
+  builder: DOCKERFILE
+
+deploy:
+  startCommand: nginx -g 'daemon off;'
+  restartPolicyType: ON_FAILURE
+  restartPolicyMaxRetries: 5

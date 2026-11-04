@@ -88,6 +88,9 @@ rea-app/
 │                                  # verify-browser-fixes
 ├── build/                         # icon.icns/png + engine-bundle/ (gitignored, 2.7 GB)
 ├── docker-compose.yml             # postgres 16 + cloud-api + cloud-web (local dev)
+├── railway.json                   # Railway deploy config (healthcheck, restart policy)
+├── DEPLOY_RAILWAY.md              # step-by-step Railway deployment guide
+├── cloud/web/railway.json         # web service Railway config
 ├── .env.example                   # DATABASE_URL, JWT_SECRET, PORT, VITE_API_URL
 ├── .gitignore                     # strict (versions/ kept on disk, ignored by git)
 ├── electron-builder.yml           # light DMG config
@@ -141,6 +144,7 @@ Channels (preload `window.rea`): `profiles:list|create|save|trash|restore|purge|
 ### 3.5 Backend / Cloud (TASK 10)
 - **cloud/api** (Fastify + Drizzle + PostgreSQL, port 8787): JWT auth (`/api/auth/register|login|refresh|me` + PATCH me + change-password), sync (`/api/sync/pull`, `PUT /api/sync/push` — plan-limit enforced, ownership-aware upserts), `DELETE /api/profiles/:id` (tombstone), session archives `PUT|GET /api/profiles/:id/session-state` (gzip ≤ 50 MB, bytea). Migrations (idempotent DDL) at boot.
 - **cloud/web** (Vite + React + antd, port 5173 via nginx in Docker): hash-routed Landing / Register / Login / Dashboard (plan badge, quota bar, counts, name+password change). nginx proxies `/api/` → api:8787.
+- **Railway**: production-ready — railway.json (healthcheck /api/health, restart policy), per-service root directories, DEPLOY_RAILWAY.md guide. Verified: compose stack up, 13/13 test, DMG artifacts.
 - **docker-compose.yml**: postgres:16-alpine (volume+healthcheck), api (self-migrating), web. Verified: all 3 up, 13/13 acceptance test PASS.
 - **Auth state in Electron**: not yet wired (Étape 2.4).
 
@@ -395,6 +399,7 @@ node scripts/test-fingerprint.mjs   # needs ≥1 profile with pinned fp
 11. **Multi-selection bar**: floating bottom-centre.
 12. **In-browser badge**: toolbar popup (tz/coords/IP/name/id, click-copy), per-profile WebExtension, dock icon + title.
 13. **TASK 9+10** (current): storage hardening/offline DMG then hybrid cloud (Docker/GitHub/Railway).
+14. **Working rules** (user, 2026-11-03): version snapshots before every change batch, contextual analysis of prompts, deviate from prompt letter when logic is wrong (explain), step-by-step with tests + authorization at each step.
 14. **Standing rules**: version snapshots before changes; contextual analysis; user logic may be corrected; step-by-step with tests + authorization at each step.
 
 ---
