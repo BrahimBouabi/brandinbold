@@ -36,7 +36,7 @@ node_modules, DMGs, versions/, engine-bundle and env files).
 - Settings → Networking → **Generate Domain** → note the public URL
   (e.g. `https://brandinbold-api.up.railway.app`)
 - Healthcheck: Railway probes `/api/health` automatically (configured in
-  `railway.json`)
+  `cloud/api/railway.json`)
 
 ### Service 3: Cloud Web
 - Add a service from the repo → **Root Directory**: `cloud/web`
