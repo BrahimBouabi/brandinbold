@@ -188,6 +188,8 @@ export interface Group {
   color: string
   description: string
   createdAt: string
+  /** Step B: last modification (newer-wins cloud sync) */
+  updatedAt?: string
 }
 
 export interface ProxyEntry {
@@ -205,6 +207,8 @@ export interface ProxyEntry {
   lastCheckedAt: string | null
   lastIpInfo: IpInfo | null
   createdAt: string
+  /** Step B: last modification (newer-wins cloud sync) */
+  updatedAt?: string
 }
 
 export type ThemeMode = 'system' | 'light' | 'dark'

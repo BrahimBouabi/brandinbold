@@ -96,7 +96,7 @@ r = await fetch(`${BASE}/api/profiles/${profileDocs[0].id}/session-state`, {
   body: archive
 })
 body = await r.json()
-check('session-state upload', r.status === 200 && body.size === archive.length, `size ${body.size}`)
+check('session-state upload', r.status === 200 && body.size === archive.length && !!body.updatedAt, `size ${body.size} updatedAt ${body.updatedAt}`)
 
 r = await fetch(`${BASE}/api/profiles/${profileDocs[0].id}/session-state`, {
   headers: { authorization: `Bearer ${token}` }
@@ -104,14 +104,85 @@ r = await fetch(`${BASE}/api/profiles/${profileDocs[0].id}/session-state`, {
 const back = Buffer.from(await r.arrayBuffer())
 check('session-state download identical', r.status === 200 && back.equals(archive), `bytes ${back.length}`)
 
-// 9. delete profile (tombstone) → pull excludes it
+// 9. delete profile (tombstone) → pull excludes it + lists it in deleted.profiles
 r = await fetch(`${BASE}/api/profiles/${profileDocs[1].id}`, {
   method: 'DELETE',
   headers: { authorization: `Bearer ${token}` }
 })
 r = await fetch(`${BASE}/api/sync/pull`, { headers: { authorization: `Bearer ${token}` } })
 body = await r.json()
-check('delete tombstone + pull excludes', body.profiles?.length === 1, `remaining ${body.profiles?.length}`)
+check(
+  'delete tombstone + pull excludes + deleted list',
+  body.profiles?.length === 1 && body.deleted?.profiles?.some((t) => t.id === profileDocs[1].id),
+  `remaining ${body.profiles?.length} tombstones ${body.deleted?.profiles?.length}`
+)
+
+// 9b. Step B: stale push (updatedAt in the past) must NOT resurrect a deleted profile or overwrite a newer one
+const past = new Date(Date.now() - 60_000).toISOString()
+r = await fetch(`${BASE}/api/sync/push`, {
+  method: 'PUT',
+  headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+  body: JSON.stringify({
+    profiles: [
+      { ...profileDocs[0], name: 'STALE NAME', updatedAt: past },
+      { ...profileDocs[1], name: 'ZOMBIE', updatedAt: past }
+    ]
+  })
+})
+body = await r.json()
+r = await fetch(`${BASE}/api/sync/pull`, { headers: { authorization: `Bearer ${token}` } })
+const afterStale = await r.json()
+check(
+  'stale push skipped (no overwrite, no zombie resurrection)',
+  body.skipped === 2 && afterStale.profiles?.length === 1 && afterStale.profiles[0].name === 'Cloud P1',
+  JSON.stringify(body)
+)
+
+// 9c. Step B: newer push updates group + proxy, and resurrects profileDocs[1] when edited AFTER deletion
+const future = new Date(Date.now() + 5_000).toISOString()
+r = await fetch(`${BASE}/api/sync/push`, {
+  method: 'PUT',
+  headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+  body: JSON.stringify({
+    profiles: [{ ...profileDocs[1], name: 'Restored P2', updatedAt: future }],
+    groups: [{ id: uid(3), name: 'Renamed Group', pinned: true, color: '#8952ef', updatedAt: future }],
+    proxies: [{ id: uid(4), name: 'Updated Proxy', type: 'socks5', host: '9.9.9.9', port: 1080, updatedAt: future }]
+  })
+})
+r = await fetch(`${BASE}/api/sync/pull`, { headers: { authorization: `Bearer ${token}` } })
+const afterNewer = await r.json()
+check(
+  'newer-wins updates group/proxy + resurrects restored profile',
+  afterNewer.profiles?.length === 2 &&
+    afterNewer.groups?.[0]?.name === 'Renamed Group' &&
+    afterNewer.proxies?.[0]?.host === '9.9.9.9',
+  JSON.stringify({ p: afterNewer.profiles?.length, g: afterNewer.groups?.[0]?.name, x: afterNewer.proxies?.[0]?.host })
+)
+
+// 9d. Step B: queued tombstones in push payload delete group + proxy
+const delAt = new Date(Date.now() + 10_000).toISOString()
+r = await fetch(`${BASE}/api/sync/push`, {
+  method: 'PUT',
+  headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+  body: JSON.stringify({
+    deleted: {
+      groups: [{ id: uid(3), deletedAt: delAt }],
+      proxies: [{ id: uid(4), deletedAt: delAt }]
+    }
+  })
+})
+body = await r.json()
+r = await fetch(`${BASE}/api/sync/pull`, { headers: { authorization: `Bearer ${token}` } })
+const afterDel = await r.json()
+check(
+  'push tombstones deletes group + proxy and exposes them in pull.deleted',
+  body.deleted === 2 &&
+    afterDel.groups?.length === 0 &&
+    afterDel.proxies?.length === 0 &&
+    afterDel.deleted?.groups?.length === 1 &&
+    afterDel.deleted?.proxies?.length === 1,
+  JSON.stringify(body)
+)
 
 // 10. refresh token flow
 r = await fetch(`${BASE}/api/auth/login`, {

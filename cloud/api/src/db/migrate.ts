@@ -51,4 +51,10 @@ CREATE TABLE IF NOT EXISTS session_archives (
   size integer NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Step B: newer-wins + tombstones for groups/proxies (idempotent)
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+ALTER TABLE proxies ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE proxies ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
 `

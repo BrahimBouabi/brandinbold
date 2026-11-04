@@ -4,7 +4,7 @@ import { setupEngineHome } from './engine/camoufox/engineHome'
 import { readFile, writeFile, readdir, rm, cp, mkdir } from 'fs/promises'
 import { execFile } from 'child_process'
 import { engineHomeDir } from './engine/camoufox/engineHome'
-import { initCloud, cloudEnabled, cloudAuthed, cloudUser, cloudOfflineMode, doLogin, doRegister, doLogout, cloudPullAndMerge, scheduleCloudPush, cloudMaybeRestoreSession, cloudUploadSession, apiUrl as cloudApiUrl, apiUrlFromEnv, cloudClient } from './cloud/cloudMain'
+import { initCloud, cloudEnabled, cloudAuthed, cloudUser, cloudOfflineMode, doLogin, doRegister, doLogout, cloudPullAndMerge, scheduleCloudPush, cloudMaybeRestoreSession, cloudUploadSession, queueCloudDelete, unqueueCloudDelete, apiUrl as cloudApiUrl, apiUrlFromEnv, cloudClient } from './cloud/cloudMain'
 import { getProfileDiskInfo, purgeTransientCaches } from './launcher/profileCache'
 import { mkdirSync } from 'fs'
 import { existsSync, readFileSync } from 'fs'
@@ -64,6 +64,8 @@ chromeEngine.on('exit', (profileId: string) => {
 ;(camoufoxEngine as any).on?.('exit', (profileId: string) => {
   registry.onBrowserExit(profileId)
   push('status', profileId, 'ready')
+  // Step B: the user closed the browser window themselves → roam the session too
+  void cloudUploadSession(profileId, join(app.getPath('userData'), 'profiles', profileId)).catch(() => {})
 })
 
 function push(type: string, profileId: string, status: string, detail?: string): void {
@@ -72,8 +74,8 @@ function push(type: string, profileId: string, status: string, detail?: string):
 
 function db_exec_group_meta(id: string, color: string, description: string): void {
   ;(store as any).db
-    ?.prepare('UPDATE groups SET color = ?, description = ? WHERE id = ?')
-    .run(color, description, id)
+    ?.prepare('UPDATE groups SET color = ?, description = ?, updated_at = ? WHERE id = ?')
+    .run(color, description, new Date().toISOString(), id)
 }
 
 function createWindow(): void {
@@ -107,12 +109,23 @@ ipcMain.handle('profiles:save', (_e, profile: any) => { const saved = store.save
 ipcMain.handle('profiles:trash', (_e, id: string) => {
   if (registry.get(id)) throw new Error('Profile is running')
   const ok = store.trash(id)
+  // Step B: trash = cloud tombstone (offline-queued); restore re-uploads with a newer stamp
+  if (ok) queueCloudDelete('profiles', id)
   scheduleCloudPush()
   return ok
 })
-ipcMain.handle('profiles:restore', (_e, id: string) => store.restore(id))
+ipcMain.handle('profiles:restore', (_e, id: string) => {
+  const ok = store.restore(id)
+  if (ok) {
+    unqueueCloudDelete('profiles', id)
+    scheduleCloudPush()
+  }
+  return ok
+})
 ipcMain.handle('profiles:purge', (_e, id: string) => {
   if (registry.get(id)) throw new Error('Profile is running')
+  queueCloudDelete('profiles', id)
+  scheduleCloudPush()
   return store.purge(id)
 })
 ipcMain.handle('profiles:generate', async (_e, profile: any) => {
@@ -237,15 +250,16 @@ ipcMain.handle('groups:create', (_e, name: string, pinned = false, color?: strin
 ipcMain.handle('groups:rename', (_e, id: string, name: string) => { store.renameGroup(id, name); scheduleCloudPush() })
 ipcMain.handle('groups:updateMeta', (_e, id: string, color: string, description: string) => {
   db_exec_group_meta(id, color, description)
+  scheduleCloudPush()
 })
-ipcMain.handle('groups:pin', (_e, id: string, pinned: boolean) => store.setGroupPinned(id, pinned))
-ipcMain.handle('groups:delete', (_e, id: string) => { store.deleteGroup(id); scheduleCloudPush() })
+ipcMain.handle('groups:pin', (_e, id: string, pinned: boolean) => { store.setGroupPinned(id, pinned); scheduleCloudPush() })
+ipcMain.handle('groups:delete', (_e, id: string) => { store.deleteGroup(id); queueCloudDelete('groups', id); scheduleCloudPush() })
 
 // ---------- proxies ----------
 ipcMain.handle('proxies:list', () => store.listProxies())
 ipcMain.handle('proxies:create', (_e, data: any) => { const x = store.createProxy(data); scheduleCloudPush(); return x })
 ipcMain.handle('proxies:save', (_e, entry: any) => { const x = store.saveProxy(entry); scheduleCloudPush(); return x })
-ipcMain.handle('proxies:delete', (_e, id: string) => { store.deleteProxy(id); scheduleCloudPush() })
+ipcMain.handle('proxies:delete', (_e, id: string) => { store.deleteProxy(id); queueCloudDelete('proxies', id); scheduleCloudPush() })
 ipcMain.handle('proxies:test', async (_e, proxy: any) => checkProxy(proxy))
 
 // ---------- settings ----------
@@ -446,7 +460,7 @@ app.whenReady().then(() => {
   if (engineHome.error) console.error('engine home setup failed:', engineHome.error)
   else if (engineHome.migrated) console.log('engine storage migrated to', engineHomeDir())
 
-  initCloud(store)
+  initCloud(store, (id) => !!registry.get(id))
   applyEngineSetting()
   createWindow()
   // dev-only screenshot hook: REA_SHOT=/path.png captures the renderer and quits

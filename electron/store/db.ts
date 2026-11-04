@@ -79,6 +79,10 @@ export class ProfileStore {
     if (gcols.length && !gcols.some((c) => c.name === 'description')) {
       this.db.exec('ALTER TABLE groups ADD COLUMN description TEXT')
     }
+    // Step B: newer-wins sync needs a modification time on groups
+    if (gcols.length && !gcols.some((c) => c.name === 'updated_at')) {
+      this.db.exec('ALTER TABLE groups ADD COLUMN updated_at TEXT')
+    }
   }
 
   // ---------- profiles ----------
@@ -105,9 +109,10 @@ export class ProfileStore {
     return row ? (JSON.parse(row.json) as Profile) : null
   }
 
-  save(profile: Profile): Profile {
+  /** keepUpdatedAt: cloud merges keep the remote timestamp (newer-wins sync). */
+  save(profile: Profile, opts: { keepUpdatedAt?: boolean } = {}): Profile {
     const now = new Date().toISOString()
-    const p = { ...profile, updatedAt: now }
+    const p = { ...profile, updatedAt: opts.keepUpdatedAt && profile.updatedAt ? profile.updatedAt : now }
     this.db
       .prepare(
         `INSERT INTO profiles (id, name, status, group_id, deleted_at, created_at, updated_at, json)
@@ -133,11 +138,18 @@ export class ProfileStore {
     return res.changes > 0
   }
 
+  /** Restoring bumps updatedAt so the profile wins over its cloud tombstone. */
   restore(id: string): boolean {
+    const now = new Date().toISOString()
     const res = this.db
-      .prepare('UPDATE profiles SET deleted_at = NULL WHERE id = ?')
-      .run(id)
+      .prepare("UPDATE profiles SET deleted_at = NULL, updated_at = ?, json = json_set(json, '$.updatedAt', ?) WHERE id = ?")
+      .run(now, now, id)
     return res.changes > 0
+  }
+
+  isTrashed(id: string): boolean {
+    const row = this.db.prepare('SELECT deleted_at FROM profiles WHERE id = ?').get(id) as { deleted_at: string | null } | undefined
+    return !!row?.deleted_at
   }
 
   purge(id: string): boolean {
@@ -222,33 +234,35 @@ export class ProfileStore {
       pinned: !!r.pinned,
       color: r.color ?? PROFILE_COLORS[0],
       description: r.description ?? '',
-      createdAt: r.created_at
+      createdAt: r.created_at,
+      updatedAt: r.updated_at ?? r.created_at
     }))
   }
 
   createGroup(name: string, pinned = false, color = PROFILE_COLORS[0], description = ''): Group {
-    const g: Group = { id: randomUUID(), name, pinned, color, description, createdAt: new Date().toISOString() }
+    const now = new Date().toISOString()
+    const g: Group = { id: randomUUID(), name, pinned, color, description, createdAt: now, updatedAt: now }
     this.db
-      .prepare('INSERT INTO groups (id, name, pinned, created_at) VALUES (?, ?, ?, ?)')
-      .run(g.id, g.name, g.pinned ? 1 : 0, g.createdAt)
+      .prepare('INSERT INTO groups (id, name, pinned, color, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(g.id, g.name, g.pinned ? 1 : 0, g.color, g.description, g.createdAt, now)
     return g
   }
 
   upsertGroup(g: Group): void {
     this.db
       .prepare(
-        'INSERT INTO groups (id, name, pinned, color, description, created_at) VALUES (?, ?, ?, ?, ?, ?) ' +
-          'ON CONFLICT(id) DO UPDATE SET name = excluded.name, pinned = excluded.pinned, color = excluded.color, description = excluded.description'
+        'INSERT INTO groups (id, name, pinned, color, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ' +
+          'ON CONFLICT(id) DO UPDATE SET name = excluded.name, pinned = excluded.pinned, color = excluded.color, description = excluded.description, updated_at = excluded.updated_at'
       )
-      .run(g.id, g.name, g.pinned ? 1 : 0, g.color ?? null, g.description ?? null, g.createdAt)
+      .run(g.id, g.name, g.pinned ? 1 : 0, g.color ?? null, g.description ?? null, g.createdAt, g.updatedAt ?? new Date().toISOString())
   }
 
   renameGroup(id: string, name: string): void {
-    this.db.prepare('UPDATE groups SET name = ? WHERE id = ?').run(name, id)
+    this.db.prepare('UPDATE groups SET name = ?, updated_at = ? WHERE id = ?').run(name, new Date().toISOString(), id)
   }
 
   setGroupPinned(id: string, pinned: boolean): void {
-    this.db.prepare('UPDATE groups SET pinned = ? WHERE id = ?').run(pinned ? 1 : 0, id)
+    this.db.prepare('UPDATE groups SET pinned = ?, updated_at = ? WHERE id = ?').run(pinned ? 1 : 0, new Date().toISOString(), id)
   }
 
   deleteGroup(id: string): void {
@@ -271,7 +285,9 @@ export class ProfileStore {
     return row ? (JSON.parse(row.json) as ProxyEntry) : null
   }
 
-  saveProxy(entry: ProxyEntry): ProxyEntry {
+  /** keepUpdatedAt: cloud merges keep the remote timestamp (newer-wins sync). */
+  saveProxy(entry: ProxyEntry, opts: { keepUpdatedAt?: boolean } = {}): ProxyEntry {
+    entry = { ...entry, updatedAt: opts.keepUpdatedAt && entry.updatedAt ? entry.updatedAt : new Date().toISOString() }
     this.db
       .prepare(
         `INSERT INTO proxies (id, name, created_at, json) VALUES (?, ?, ?, ?)

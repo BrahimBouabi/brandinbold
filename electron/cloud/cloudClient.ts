@@ -75,10 +75,10 @@ export function createCloudClient(cfg: CloudClientConfig) {
     logout: () => cfg.setTokens(null, null),
     me: () => request('/api/auth/me'),
     pull: () => request('/api/sync/pull'),
-    push: async (payload: { profiles?: unknown[]; groups?: unknown[]; proxies?: unknown[] }) =>
+    push: async (payload: { profiles?: unknown[]; groups?: unknown[]; proxies?: unknown[]; deleted?: unknown }) =>
       await request('/api/sync/push', { method: 'PUT', body: JSON.stringify(payload) }),
     deleteProfile: (id: string) => request(`/api/profiles/${id}`, { method: 'DELETE' }),
-    uploadSession: (profileId: string, data: Buffer) =>
+    uploadSession: (profileId: string, data: Buffer): Promise<{ size: number; updatedAt?: string }> =>
       request(`/api/profiles/${profileId}/session-state`, {
         method: 'PUT',
         headers: { 'content-type': 'application/octet-stream' },

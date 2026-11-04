@@ -1,5 +1,5 @@
 import { createCloudClient, type CloudClient, type CloudUser } from './cloudClient'
-import { pullAndMerge, uploadSessionState, maybeRestoreSession, pushAll, type SyncSummary } from './syncEngine'
+import { pullAndMerge, uploadSessionState, maybeRestoreSession, pushAll, type DeleteQueue, type SyncSummary } from './syncEngine'
 import type { ProfileStore } from '../store/db'
 
 /**
@@ -25,9 +25,57 @@ export function apiUrlFromEnv(): boolean {
   return !!(process.env.BRANDINBOLD_CLOUD_API_URL ?? process.env.Brandinbold_CLOUD_API_URL)
 }
 
-export function initCloud(storeRef: ProfileStore): void {
+let isRunning: (id: string) => boolean = () => false
+
+export function initCloud(storeRef: ProfileStore, isRunningFn?: (id: string) => boolean): void {
   store = storeRef
+  if (isRunningFn) isRunning = isRunningFn
 }
+
+// ---------- offline delete queue (Step B) ----------
+const QUEUE_KEY = 'cloud_pending_deletes'
+type Kind = keyof DeleteQueue
+
+function readQueue(): DeleteQueue {
+  try {
+    const q = JSON.parse(store?.getSetting(QUEUE_KEY) || '{}') as Partial<DeleteQueue>
+    return { profiles: q.profiles ?? [], groups: q.groups ?? [], proxies: q.proxies ?? [] }
+  } catch {
+    return { profiles: [], groups: [], proxies: [] }
+  }
+}
+
+function writeQueue(q: DeleteQueue): void {
+  store?.setSetting(QUEUE_KEY, JSON.stringify(q))
+}
+
+/** Record a local deletion; survives restarts until the server acknowledges it. */
+export function queueCloudDelete(kind: Kind, id: string): void {
+  if (!store || !cloudAuthed()) return
+  const q = readQueue()
+  q[kind] = q[kind].filter((t) => t.id !== id).concat({ id, deletedAt: new Date().toISOString() })
+  writeQueue(q)
+}
+
+export function unqueueCloudDelete(kind: Kind, id: string): void {
+  if (!store) return
+  const q = readQueue()
+  q[kind] = q[kind].filter((t) => t.id !== id)
+  writeQueue(q)
+}
+
+/** Drop exactly the tombstones that were sent (new ones queued meanwhile stay). */
+function ackQueue(sent: DeleteQueue): void {
+  const q = readQueue()
+  for (const k of ['profiles', 'groups', 'proxies'] as Kind[]) {
+    const done = new Set(sent[k].map((t) => `${t.id}@${t.deletedAt}`))
+    q[k] = q[k].filter((t) => !done.has(`${t.id}@${t.deletedAt}`))
+  }
+  writeQueue(q)
+}
+
+// ---------- session archive markers (server clock) ----------
+const markerKey = (id: string): string => `cloud_session_synced:${id}`
 
 function makeClient(): CloudClient {
   return createCloudClient({
@@ -36,9 +84,9 @@ function makeClient(): CloudClient {
     getRefreshToken: () => store?.getSetting('cloud_refresh_token') ?? null,
     setTokens: (access, refresh) => {
       if (!store) return
-      if (access) store.setSetting('cloud_token', access)
-      else store.setSetting('cloud_token', '')
-      if (refresh) store.setSetting('cloud_refresh_token', refresh)
+      store.setSetting('cloud_token', access ?? '')
+      // null refresh = logout: the refresh token must be wiped too
+      store.setSetting('cloud_refresh_token', refresh ?? '')
     }
   })
 }
@@ -85,9 +133,13 @@ export async function doRegister(email: string, name: string, password: string):
   return res.user
 }
 
+/** Full sign-out: both tokens, cached user, pending push and account-bound queue. */
 export function doLogout(): void {
+  if (pushTimer) clearTimeout(pushTimer)
+  pushTimer = null
   cloudClient().logout()
   store?.setSetting('cloud_user', '')
+  writeQueue({ profiles: [], groups: [], proxies: [] })
 }
 
 /** Pull remote → merge local (newer updatedAt wins). Called on login/start. */
@@ -95,14 +147,20 @@ export async function cloudPullAndMerge(): Promise<SyncSummary | null> {
   if (!store || !cloudEnabled() || !cloudAuthed() || syncing) return null
   syncing = true
   try {
+    const s = store
     return await pullAndMerge(cloudClient(), {
-      list: () => store!.list(),
-      get: (id) => store!.get(id),
-      save: (p) => store!.save(p),
-      listGroups: () => store!.listGroups(),
-      upsertGroup: (g) => store!.upsertGroup(g),
-      listProxies: () => store!.listProxies(),
-      saveProxy: (x) => store!.saveProxy(x)
+      get: (id) => s.get(id),
+      save: (p, o) => s.save(p, o),
+      isTrashed: (id) => s.isTrashed(id),
+      trash: (id) => s.trash(id),
+      listGroups: () => s.listGroups(),
+      upsertGroup: (g) => s.upsertGroup(g),
+      deleteGroup: (id) => s.deleteGroup(id),
+      listProxies: () => s.listProxies(),
+      saveProxy: (x, o) => s.saveProxy(x, o),
+      deleteProxy: (id) => s.deleteProxy(id),
+      isRunning,
+      pendingDeletes: readQueue
     })
   } finally {
     syncing = false
@@ -115,12 +173,15 @@ export function scheduleCloudPush(delayMs = 1500): void {
   if (pushTimer) clearTimeout(pushTimer)
   pushTimer = setTimeout(() => {
     void (async () => {
-      if (!store || syncing) return
+      if (!store) return
+      if (syncing) return scheduleCloudPush(1000) // a pull is running: retry instead of dropping the change
       syncing = true
       try {
-        await pushAll(cloudClient(), store.list(), store.listGroups(), store.listProxies())
+        const sent = readQueue()
+        await pushAll(cloudClient(), store.list(), store.listGroups(), store.listProxies(), sent)
+        ackQueue(sent)
       } catch {
-        /* offline — retried on next mutation or app start */
+        /* offline — queue kept, retried on next mutation or app start */
       } finally {
         syncing = false
       }
@@ -130,12 +191,21 @@ export function scheduleCloudPush(delayMs = 1500): void {
 
 /** Session archive: download before launch if the cloud copy is newer. */
 export async function cloudMaybeRestoreSession(profileId: string, profileDir: string): Promise<boolean> {
-  if (!cloudEnabled() || !cloudAuthed()) return false
-  return maybeRestoreSession(cloudClient(), profileId, profileDir)
+  if (!cloudEnabled() || !cloudAuthed() || !store) return false
+  const r = await maybeRestoreSession(cloudClient(), profileId, profileDir, store.getSetting(markerKey(profileId)))
+  if (r.restored && r.serverUpdatedAt) store.setSetting(markerKey(profileId), r.serverUpdatedAt)
+  return r.restored
 }
 
 /** Session archive: upload after stop + purge (vital files only). */
 export async function cloudUploadSession(profileId: string, profileDir: string): Promise<{ size: number } | null> {
-  if (!cloudEnabled() || !cloudAuthed()) return null
-  return uploadSessionState(cloudClient(), profileId, profileDir)
+  if (!cloudEnabled() || !cloudAuthed() || !store) return null
+  // Stop button + browser 'exit' event both fire for one shutdown → one upload
+  const last = recentUploads.get(profileId) ?? 0
+  if (Date.now() - last < 10_000) return null
+  recentUploads.set(profileId, Date.now())
+  const r = await uploadSessionState(cloudClient(), profileId, profileDir)
+  if (r?.updatedAt) store.setSetting(markerKey(profileId), r.updatedAt)
+  return r
 }
+const recentUploads = new Map<string, number>()

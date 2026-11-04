@@ -47,3 +47,7 @@
 | v2026-11-04-stepA-baseline | 2026-11-04 | Step A baseline (avant correctifs déploiement Railway) | versions/v2026-11-04-stepA-baseline.tar.gz |
 
 | v2026-11-04-stepA-railway-fixes | 2026-11-04 | Step A: railway.json valides (JSON, start dist/index.cjs) + cloud/api/railway.json, nginx sur $PORT (template envsubst) sans proxy api:8787, VITE_API_URL en build-arg, champ « Cloud server » (Test/Save) dans Settings + AuthGate, override env BRANDINBOLD_CLOUD_API_URL, client cloud reconstruit au changement d'URL (logout si serveur change). Tests: typecheck OK, image web PORT=6123 OK, compose + test-cloud 13/13 PASS | versions/v2026-11-04-stepA-railway-fixes.tar.gz |
+
+| v2026-11-04-stepB-baseline | 2026-11-04 | Step B baseline (avant correctifs sync cloud & logout) | versions/v2026-11-04-stepB-baseline.tar.gz |
+
+| v2026-11-04-stepB-sync-fixes | 2026-11-04 | Step B: sync cloud complet — tombstones/suppressions (profiles/groups/proxies) avec file d'attente offline persistée (cloud_pending_deletes) et résurrection au restore, newer-wins bidirectionnel (profiles/groups/proxies) avec conservation des updatedAt distants, logout complet (purge cloud_refresh_token + file d'attente), marqueurs d'horloge serveur pour les archives de session (anti clock-skew) + upload auto à la fermeture fenêtre navigateur. Tests: typecheck OK, test-cloud 16/16 PASS | versions/v2026-11-04-stepB-sync-fixes.tar.gz |

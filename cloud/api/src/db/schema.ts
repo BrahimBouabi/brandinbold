@@ -34,6 +34,8 @@ export const groups = pgTable('groups', {
   pinned: boolean('pinned').notNull().default(false),
   color: text('color'),
   description: text('description'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 })
 
@@ -41,6 +43,8 @@ export const proxies = pgTable('proxies', {
   id: uuid('id').primaryKey(),
   userId: uuid('user_id').notNull(),
   json: text('json').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 })
 
