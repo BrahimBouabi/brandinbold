@@ -35,12 +35,15 @@ node_modules, DMGs, versions/, engine-bundle and env files).
   | `PORT` | leave empty — Railway injects it |
 - Settings → Networking → **Generate Domain** → note the public URL
   (e.g. `https://brandinbold-api.up.railway.app`)
-- Healthcheck: Railway probes `/api/health` automatically (configured in
-  `railway.json`)
+- Settings → **Config-as-code path**: `/cloud/api/railway.json` (Railway does
+  NOT follow the root directory for this file — the path must be absolute).
+  It sets the healthcheck `/api/health` and start command `node dist/index.cjs`.
 
 ### Service 3: Cloud Web
 - Add a service from the repo → **Root Directory**: `cloud/web`
-- Railway builds `cloud/web/Dockerfile` (nginx serving the SPA, proxying /api)
+- Railway builds `cloud/web/Dockerfile` (nginx serving the SPA on Railway's
+  `$PORT`; the SPA calls the API directly via `VITE_API_URL`, no proxy)
+- Settings → **Config-as-code path**: `/cloud/web/railway.json`
 - Variables:
   | Variable | Value |
   |---|---|
@@ -51,10 +54,13 @@ node_modules, DMGs, versions/, engine-bundle and env files).
 
 ## 3. Desktop app
 
-The Electron app connects to the cloud via **Settings → Debug tools → API URL**
-(or the `Brandinbold_CLOUD_API_URL` env var). Set it to the Railway API URL
-from step 2, restart the app, sign in with the account created on
-`cloud-web` — profiles, groups, proxies and session archives sync automatically.
+Set the server in the Electron app via **Settings → Debug tools → Cloud
+server** or **Server settings…** on the sign-in screen: paste the Railway API
+URL, click **Test** (probes `/api/health`), then **Save** — no restart needed.
+Changing server signs you out of the previous one. The env var
+`BRANDINBOLD_CLOUD_API_URL` overrides the setting (field becomes read-only).
+Sign in with the account created on `cloud-web` — profiles, groups, proxies and
+session archives sync automatically.
 
 ## 4. Verify
 

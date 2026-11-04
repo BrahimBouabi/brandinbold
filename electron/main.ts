@@ -4,7 +4,7 @@ import { setupEngineHome } from './engine/camoufox/engineHome'
 import { readFile, writeFile, readdir, rm, cp, mkdir } from 'fs/promises'
 import { execFile } from 'child_process'
 import { engineHomeDir } from './engine/camoufox/engineHome'
-import { initCloud, cloudEnabled, cloudAuthed, cloudUser, cloudOfflineMode, doLogin, doRegister, doLogout, cloudPullAndMerge, scheduleCloudPush, cloudMaybeRestoreSession, cloudUploadSession } from './cloud/cloudMain'
+import { initCloud, cloudEnabled, cloudAuthed, cloudUser, cloudOfflineMode, doLogin, doRegister, doLogout, cloudPullAndMerge, scheduleCloudPush, cloudMaybeRestoreSession, cloudUploadSession, apiUrl as cloudApiUrl, apiUrlFromEnv, cloudClient } from './cloud/cloudMain'
 import { getProfileDiskInfo, purgeTransientCaches } from './launcher/profileCache'
 import { mkdirSync } from 'fs'
 import { existsSync, readFileSync } from 'fs'
@@ -382,8 +382,36 @@ ipcMain.handle('cloud:status', () => ({
   authed: cloudAuthed(),
   user: cloudUser(),
   offlineMode: cloudOfflineMode(),
-  apiUrl: store.getSettings().cloudApiUrl
+  apiUrl: cloudApiUrl(),
+  apiUrlFromEnv: apiUrlFromEnv()
 }))
+/** Probe /api/health of a candidate URL without saving it. */
+ipcMain.handle('cloud:testUrl', async (_e, url: string) => {
+  try {
+    const u = new URL(url.trim())
+    const res = await fetch(`${u.origin}${u.pathname.replace(/\/+$/, '')}/api/health`, { signal: AbortSignal.timeout(8000) })
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
+    const body = (await res.json()) as { app?: string; version?: string }
+    return { ok: body.app === 'Brandinbold Cloud API', app: body.app, version: body.version, error: body.app ? undefined : 'Not a Brandinbold API' }
+  } catch (e: any) {
+    return { ok: false, error: e.message }
+  }
+})
+/** Save the API URL; signs out when the server changes (tokens belong to the old server). */
+ipcMain.handle('cloud:setApiUrl', (_e, url: string) => {
+  const clean = url.trim().replace(/\/+$/, '')
+  try {
+    const u = new URL(clean)
+    if (!/^https?:$/.test(u.protocol)) throw new Error('bad protocol')
+  } catch {
+    throw new Error('Invalid URL (expected http(s)://host)')
+  }
+  const changed = clean !== cloudApiUrl()
+  store.saveSettings({ cloudApiUrl: clean })
+  if (changed) doLogout()
+  void cloudClient() // rebuilds against the new URL
+  return { apiUrl: cloudApiUrl(), signedOut: changed }
+})
 ipcMain.handle('cloud:login', async (_e, email: string, password: string) => {
   const user = await doLogin(email, password)
   scheduleCloudPush()

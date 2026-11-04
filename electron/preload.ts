@@ -82,7 +82,7 @@ const api = {
       ipcRenderer.invoke('system:info')
   },
   cloud: {
-    status: (): Promise<{ enabled: boolean; authed: boolean; user: any; offlineMode: boolean; apiUrl: string }> =>
+    status: (): Promise<{ enabled: boolean; authed: boolean; user: any; offlineMode: boolean; apiUrl: string; apiUrlFromEnv: boolean }> =>
       ipcRenderer.invoke('cloud:status'),
     login: (email: string, password: string): Promise<any> => ipcRenderer.invoke('cloud:login', email, password),
     register: (email: string, name: string, password: string): Promise<any> =>
@@ -90,7 +90,10 @@ const api = {
     logout: (): Promise<boolean> => ipcRenderer.invoke('cloud:logout'),
     setOfflineMode: (v: boolean): Promise<boolean> => ipcRenderer.invoke('cloud:offlineMode', v),
     syncNow: (): Promise<any> => ipcRenderer.invoke('cloud:syncNow'),
-    pushNow: (): Promise<boolean> => ipcRenderer.invoke('profiles:pushNow')
+    pushNow: (): Promise<boolean> => ipcRenderer.invoke('profiles:pushNow'),
+    testUrl: (url: string): Promise<{ ok: boolean; app?: string; version?: string; error?: string }> =>
+      ipcRenderer.invoke('cloud:testUrl', url),
+    setApiUrl: (url: string): Promise<{ apiUrl: string; signedOut: boolean }> => ipcRenderer.invoke('cloud:setApiUrl', url)
   },
   onProfileEvent: (cb: (event: any) => void) => {
     const listener = (_e: unknown, event: any) => cb(event)

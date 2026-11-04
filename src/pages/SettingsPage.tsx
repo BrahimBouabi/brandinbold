@@ -3,6 +3,7 @@ import { Button, Input, Select, Slider, Switch, Table, Tabs, message } from 'ant
 import { useTranslation } from 'react-i18next'
 import type { AppSettings, EngineId } from '@shared/types'
 import { useApp } from '../App'
+import { CloudServerField } from '../components/CloudServerField'
 
 const rea = (window as any).rea
 
@@ -244,6 +245,9 @@ export function SettingsPage() {
       label: t('settings.debugTools'),
       children: (
         <div>
+          <Row label="Cloud server">
+            <CloudServerField />
+          </Row>
           <Row label="Browser">
             <p style={{ fontSize: 13, marginBottom: 8 }}>Check all installed browser versions for available updates</p>
             <Button onClick={() => void rea.engine.install()}>{t('settings.checkUpdates')}</Button>

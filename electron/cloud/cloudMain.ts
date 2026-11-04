@@ -9,12 +9,20 @@ import type { ProfileStore } from '../store/db'
  */
 
 let client: CloudClient | null = null
+let clientUrl = ''
 let store: ProfileStore | null = null
 let pushTimer: ReturnType<typeof setTimeout> | null = null
 let syncing = false
 
-function apiUrl(): string {
-  return store?.getSettings().cloudApiUrl ?? 'http://localhost:8787'
+/** Env override (packaged builds / CI) wins over Settings; trailing slashes stripped. */
+export function apiUrl(): string {
+  const env = process.env.BRANDINBOLD_CLOUD_API_URL ?? process.env.Brandinbold_CLOUD_API_URL
+  const url = (env || store?.getSettings().cloudApiUrl || 'http://localhost:8787').trim()
+  return url.replace(/\/+$/, '')
+}
+
+export function apiUrlFromEnv(): boolean {
+  return !!(process.env.BRANDINBOLD_CLOUD_API_URL ?? process.env.Brandinbold_CLOUD_API_URL)
 }
 
 export function initCloud(storeRef: ProfileStore): void {
@@ -36,7 +44,11 @@ function makeClient(): CloudClient {
 }
 
 export function cloudClient(): CloudClient {
-  if (!client) client = makeClient()
+  // rebuild when the API URL changed in Settings (client captures the URL)
+  if (!client || clientUrl !== apiUrl()) {
+    client = makeClient()
+    clientUrl = apiUrl()
+  }
   return client
 }
 

@@ -43,3 +43,7 @@
 
 ## Rollback
 `tar -xzf versions/<fichier>.tar.gz -C . --overwrite` puis `npm install` (si package.json changé) et `npx electron-vite build`.
+
+| v2026-11-04-stepA-baseline | 2026-11-04 | Step A baseline (avant correctifs déploiement Railway) | versions/v2026-11-04-stepA-baseline.tar.gz |
+
+| v2026-11-04-stepA-railway-fixes | 2026-11-04 | Step A: railway.json valides (JSON, start dist/index.cjs) + cloud/api/railway.json, nginx sur $PORT (template envsubst) sans proxy api:8787, VITE_API_URL en build-arg, champ « Cloud server » (Test/Save) dans Settings + AuthGate, override env BRANDINBOLD_CLOUD_API_URL, client cloud reconstruit au changement d'URL (logout si serveur change). Tests: typecheck OK, image web PORT=6123 OK, compose + test-cloud 13/13 PASS | versions/v2026-11-04-stepA-railway-fixes.tar.gz |

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Button, Form, Input, Typography } from 'antd'
 import { BrandLogo } from './Logo'
+import { CloudServerField } from './CloudServerField'
 
 const rea = (window as any).rea
 
@@ -8,6 +9,7 @@ export function AuthGate({ onAuthed, onOffline }: { onAuthed: () => void; onOffl
   const [mode, setMode] = useState<'login' | 'register'>('login')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [showServer, setShowServer] = useState(false)
 
   const submit = async (v: { email: string; password: string; name?: string }) => {
     setBusy(true)
@@ -58,6 +60,16 @@ export function AuthGate({ onAuthed, onOffline }: { onAuthed: () => void; onOffl
             {mode === 'login' ? 'Sign In' : 'Create Account'}
           </Button>
         </Form>
+
+        <div style={{ marginTop: 14 }}>
+          {showServer ? (
+            <CloudServerField compact />
+          ) : (
+            <a onClick={() => setShowServer(true)} style={{ color: '#6b7280', fontSize: 12 }}>
+              Server settings…
+            </a>
+          )}
+        </div>
 
         <div style={{ textAlign: 'center', marginTop: 20, borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: 16 }}>
           <a onClick={() => void goOffline()} style={{ color: '#6b7280', fontSize: 12.5 }}>
