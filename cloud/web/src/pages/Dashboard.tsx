@@ -84,7 +84,7 @@ export function Dashboard({ onNav }: { onNav: (r: string) => void }) {
               {user.plan} plan
             </span>
             <a
-              href="https://github.com/brandinbold/brandinbold/releases"
+              href="https://github.com/BrahimBouabi/brandinbold/releases"
               target="_blank"
               rel="noreferrer"
               style={{ background: '#8952ef', color: '#fff', borderRadius: 8, padding: '8px 16px', textDecoration: 'none', fontSize: 13, fontWeight: 600 }}
