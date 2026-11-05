@@ -110,6 +110,9 @@ export function ProfilesPage() {
       await rea.launch(id, opts)
     } catch (e: any) {
       message.error(e.message)
+    } finally {
+      await refresh.statuses(id)
+      await refresh.profiles()
     }
   }
 
@@ -118,6 +121,9 @@ export function ProfilesPage() {
       await rea.stop(id)
     } catch (e: any) {
       message.error(e.message)
+    } finally {
+      await refresh.statuses(id)
+      await refresh.profiles()
     }
   }
 

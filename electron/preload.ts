@@ -24,6 +24,7 @@ const api = {
     ipcRenderer.invoke('launch', id, opts),
   stop: (id: string): Promise<boolean> => ipcRenderer.invoke('stop', id),
   running: (): Promise<any[]> => ipcRenderer.invoke('running:list'),
+  status: (id: string): Promise<{ status: string; detail?: string }> => ipcRenderer.invoke('status:get', id),
   groups: {
     list: (): Promise<any[]> => ipcRenderer.invoke('groups:list'),
     create: (name: string, pinned?: boolean): Promise<any> =>

@@ -9,7 +9,7 @@
  *   node scripts/prepare-engine-bundle.mjs
  */
 import { execFileSync } from 'child_process'
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { join, resolve } from 'path'
 
@@ -39,7 +39,9 @@ if (!src) {
   process.exit(1)
 }
 
-const PARTS = ['browsers', 'fpgen', 'geoip', 'addons', 'config.json', 'repo_cache.json']
+const PARTS = ['browsers', 'fpgen', 'geoip', 'addons', 'config.json', 'repo_cache.json', '.0.5_FLAG']
+const flagPath = join(src, '.0.5_FLAG')
+if (!existsSync(flagPath)) writeFileSync(flagPath, '')
 rmSync(DEST, { recursive: true, force: true })
 mkdirSync(DEST, { recursive: true })
 
@@ -57,6 +59,13 @@ for (const part of PARTS) {
   if (!existsSync(from)) continue
   const to = join(DEST, part)
   clone(from, to)
+  if (part === 'geoip' && existsSync(to)) {
+    for (const f of readdirSync(to)) {
+      if (f.startsWith('.download-')) {
+        rmSync(join(to, f), { recursive: true, force: true })
+      }
+    }
+  }
   let size = 0
   try {
     const walk = (d) => {

@@ -64,7 +64,7 @@ export class Launcher {
 
 
       // stage 2: proxy check + IP info (feeds geoip and custom geo modes)
-      const ipInfo = await checkProxy(profile.proxy)
+      const ipInfo = await checkProxy(profile.proxy, profile.proxy.type === 'none' ? 3500 : 12000)
       if (profile.proxy.type !== 'none' && !ipInfo.ok) {
         this.registry.markError(profile.id, `Proxy check failed: ${ipInfo.error}`)
         throw new Error(`Proxy check failed: ${ipInfo.error}`)

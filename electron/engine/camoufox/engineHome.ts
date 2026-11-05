@@ -5,10 +5,12 @@ import {
   mkdirSync,
   readdirSync,
   readlinkSync,
-  renameSync,
+   renameSync,
   rmSync,
   statSync,
-  symlinkSync
+  symlinkSync,
+  utimesSync,
+  writeFileSync
 } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
@@ -101,16 +103,23 @@ export function ensureBundledEngine(engine: string): boolean {
     const bundled = bundledEngineDir()
     if (!bundled) return false
     let cloned = false
-    for (const part of ['browsers', 'fpgen', 'geoip', 'addons', 'config.json', 'repo_cache.json']) {
+    for (const part of ['browsers', 'fpgen', 'geoip', 'addons', 'config.json', 'repo_cache.json', '.0.5_FLAG']) {
       const from = join(bundled, part)
       const to = join(engine, part)
-      if (existsSync(to)) continue
+      if (!existsSync(from) || existsSync(to)) continue
       try {
         execFileSync('/bin/cp', ['-c', '-R', from, to], { timeout: 600000, stdio: 'ignore' })
       } catch {
         execFileSync('/bin/cp', ['-R', from, to], { timeout: 900000, stdio: 'ignore' })
       }
       cloned = true
+    }
+    if (cloned && process.platform === 'darwin') {
+      try {
+        execFileSync('/usr/bin/xattr', ['-cr', engine], { timeout: 120000, stdio: 'ignore' })
+      } catch {
+        /* ignore */
+      }
     }
     return cloned
   } catch {
@@ -126,6 +135,45 @@ export function setupEngineHome(): EngineHomeResult {
     const legacy = legacyCamoufoxDir()
     mkdirSync(engine, { recursive: true })
     ensureBundledEngine(engine)
+
+    // CRITICAL (camoufox >= 0.5): pkgman.js resolveInstalledPath() deletes the
+    // entire INSTALL_DIR (including the symlink!) if `.0.5_FLAG` is missing,
+    // which triggers a 250 MB re-download during launch. Always stamp it when
+    // engine/browsers exists.
+    const compatFlag = join(engine, '.0.5_FLAG')
+    if (existsSync(join(engine, 'browsers')) && !existsSync(compatFlag)) {
+      writeFileSync(compatFlag, '')
+    }
+
+    // CRITICAL (offline & fast launch): camoufox's geolocation.needsUpdate()
+    // checks `(Date.now() - statSync(mmdb).mtimeMs) / DAY_MS < RECHECK_DAYS (1)`.
+    // If mtime is > 1 day old and the upstream mmdb buildEpoch is > 8 days old,
+    // camoufox blocks `launchOptions()` to download a 53 MB GeoIP zip from GitHub!
+    // When an `.mmdb` file is already present on disk, keep its mtime fresh and
+    // clean up any interrupted `.download-*` temp folders so launches never block.
+    const geoipDir = join(engine, 'geoip')
+    const mmdbDir = join(geoipDir, 'mmdb')
+    if (existsSync(mmdbDir)) {
+      const now = new Date()
+      for (const f of readdirSync(mmdbDir)) {
+        if (f.endsWith('.mmdb')) {
+          try {
+            utimesSync(join(mmdbDir, f), now, now)
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+      for (const f of readdirSync(geoipDir)) {
+        if (f.startsWith('.download-')) {
+          try {
+            rmSync(join(geoipDir, f), { recursive: true, force: true })
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    }
 
     const legacyStat = existsSync(legacy) ? lstatSync(legacy) : null
 

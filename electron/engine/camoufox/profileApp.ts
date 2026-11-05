@@ -1,8 +1,11 @@
 import { execFileSync } from 'child_process'
-import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync } from 'fs'
+import { homedir } from 'os'
 import { join, basename } from 'path'
 import { app } from 'electron'
 import { randomBytes } from 'crypto'
+import { engineHomeDir } from './engineHome'
+import { patchWindowTitle } from './badgeExtension'
 import logoSvgRaw from '../../../src/assets/boldin.svg?raw'
 
 /**
@@ -23,16 +26,16 @@ let cachedSourceApp: string | null = null
 export function findCamoufoxApp(): string | null {
   if (cachedSourceApp && existsSync(cachedSourceApp)) return cachedSourceApp
   try {
-    const out = execFileSync('npx', ['camoufox', 'path'], { timeout: 30000 }).toString().trim()
     const candidates = [
-      join(out.trim().split('\n')[0], 'browsers')
+      join(engineHomeDir(), 'browsers'),
+      join(homedir(), 'Library', 'Caches', 'camoufox', 'browsers')
     ]
     for (const base of candidates) {
       if (!existsSync(base)) continue
       // browsers/official/<build>/Camoufox.app — newest build wins
       const official = join(base, 'official')
       if (!existsSync(official)) continue
-      const builds = require_fs_readdir(official).sort().reverse()
+      const builds = readdirSync(official).sort().reverse()
       for (const b of builds) {
         const appPath = join(official, b, 'Camoufox.app')
         if (existsSync(appPath)) {
@@ -47,18 +50,18 @@ export function findCamoufoxApp(): string | null {
   return null
 }
 
-function require_fs_readdir(dir: string): string[] {
-  // small indirection to keep the import list tidy
-  return execFileSync('/bin/ls', [dir]).toString().split('\n').filter(Boolean)
-}
-
 export interface ProfileBundle {
   appPath: string
   executablePath: string
 }
 
 /** Build (or reuse) the per-profile wrapper bundle. Synchronous + fast (APFS clone). */
-export function buildProfileBundle(profileId: string, profileName: string, colorHex: string): ProfileBundle | null {
+export function buildProfileBundle(
+  profileId: string,
+  profileName: string,
+  colorHex: string,
+  showNameInBrowser = true
+): ProfileBundle | null {
   if (process.platform !== 'darwin') return null
   const sourceApp = findCamoufoxApp()
   if (!sourceApp) return null
@@ -73,13 +76,15 @@ export function buildProfileBundle(profileId: string, profileName: string, color
 
   const sourceVersion = versionMarkerOf(sourceApp)
   const versionMarker = join(targetApp, '.brandinbold-build')
+  const safeName = profileName.replace(/[<>&]/g, '')
   const needsRebuild =
     !existsSync(targetExe) ||
     !existsSync(targetIcns) ||
     !existsSync(versionMarker) ||
-    readFileSync(versionMarker, 'utf8') !== sourceVersion ||
+    readFileSync(versionMarker, 'utf8') !== `${sourceVersion}:${safeName}:${showNameInBrowser ? 1 : 0}` ||
     readFileSync(targetPlist, 'utf8').indexOf(colorHex.toUpperCase()) === -1
 
+  let modified = false
   if (needsRebuild) {
     rmSync(targetApp, { recursive: true, force: true })
     // APFS clonefile: instant, no real disk usage. Fallback to deep copy.
@@ -88,8 +93,12 @@ export function buildProfileBundle(profileId: string, profileName: string, color
     } catch {
       execFileSync('/bin/cp', ['-R', sourceApp, targetApp], { timeout: 300000 })
     }
-    patchInfoPlist(targetPlist, profileName, profileId, exeName)
-    writeFileSync(versionMarker, sourceVersion)
+    patchInfoPlist(targetPlist, profileName, profileId, exeName, colorHex)
+    if (showNameInBrowser) {
+      patchWindowTitle(targetApp, profileName)
+    }
+    writeFileSync(versionMarker, `${sourceVersion}:${safeName}:${showNameInBrowser ? 1 : 0}`)
+    modified = true
   }
   // icon: regenerate whenever color changes
   if (!existsSync(targetIcns) || plistHasColor(targetPlist, colorHex) === false) {
@@ -97,6 +106,23 @@ export function buildProfileBundle(profileId: string, profileName: string, color
     if (icns) {
       writeFileSync(targetIcns, icns)
       patchInfoPlist(targetPlist, profileName, profileId, exeName, colorHex)
+      modified = true
+    }
+  }
+  if (modified) {
+    // Strip any sealed bundle signature that was invalidated by patching
+    // Info.plist / omni.ja / brandinbold.icns, clear quarantine, and ad-hoc
+    // sign the main executable (takes ~30 ms).
+    rmSync(join(targetApp, 'Contents', '_CodeSignature'), { recursive: true, force: true })
+    try {
+      execFileSync('/usr/bin/xattr', ['-cr', targetApp], { timeout: 30000, stdio: 'ignore' })
+    } catch {
+      /* ignore */
+    }
+    try {
+      execFileSync('/usr/bin/codesign', ['--force', '--sign', '-', targetExe], { timeout: 30000, stdio: 'ignore' })
+    } catch {
+      /* ignore */
     }
   }
 

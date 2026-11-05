@@ -1,6 +1,7 @@
 appId: com.brandinbold.app
 productName: Brandinbold
-artifactName: Brandinbold-0.1.0-offline-${arch}
+artifactName: Brandinbold-${version}-${arch}-offline.${ext}
+afterPack: scripts/after-pack.cjs
 directories:
   output: release
 files:

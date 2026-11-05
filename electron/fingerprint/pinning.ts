@@ -1,5 +1,6 @@
 import { generateFingerprint } from 'camoufox/dist/fingerprints.js'
 import { ensureModel } from 'camoufox/dist/fpgen/index.js'
+import { setupEngineHome } from '../engine/camoufox/engineHome'
 import type { PinnedFingerprint, Profile, TargetOS } from '@shared/types'
 
 /**
@@ -13,6 +14,7 @@ let modelReady = false
 /** The fpgen coherence model downloads on first use — make sure it is there
  *  before drawing (a fresh machine or a cleared cache would otherwise fail). */
 export async function ensureFingerprintModel(): Promise<void> {
+  setupEngineHome()
   if (modelReady) return
   await ensureModel()
   modelReady = true

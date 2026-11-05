@@ -29,6 +29,7 @@ export interface AppState {
     groups: () => Promise<void>
     proxies: () => Promise<void>
     settings: (patch?: Partial<AppSettings>) => Promise<void>
+    statuses: (id?: string) => Promise<void>
     all: () => Promise<void>
   }
 }
@@ -71,13 +72,33 @@ export default function App() {
     if (patch?.language) void (await import('./i18n')).default.changeLanguage(patch.language)
   }, [])
 
+  const refreshStatuses = useCallback(async (id?: string) => {
+    if (id && rea.status) {
+      const res = await rea.status(id)
+      if (res?.status) {
+        setStatuses((s) => ({ ...s, [id]: res.status as ProfileStatus }))
+      }
+      return
+    }
+    const list: Array<{ profileId: string }> = (await rea.running?.()) ?? []
+    const runningIds = new Set(list.map((r) => r.profileId))
+    setStatuses((prev) => {
+      const next: Record<string, ProfileStatus> = {}
+      for (const [k, v] of Object.entries(prev)) {
+        next[k] = runningIds.has(k) ? 'launched' : v === 'launching' ? 'launching' : 'ready'
+      }
+      for (const rid of runningIds) next[rid] = 'launched'
+      return next
+    })
+  }, [])
+
   const refreshAll = useCallback(async () => {
-    await Promise.all([refreshProfiles(), refreshGroups(), refreshProxies(), refreshSettings()])
+    await Promise.all([refreshProfiles(), refreshGroups(), refreshProxies(), refreshSettings(), refreshStatuses()])
     const info = await rea.system.info()
     setApiPort(info.apiPort)
     const s = await rea.settings.get()
     void (await import('./i18n')).default.changeLanguage(s.language)
-  }, [refreshProfiles, refreshGroups, refreshProxies, refreshSettings])
+  }, [refreshProfiles, refreshGroups, refreshProxies, refreshSettings, refreshStatuses])
 
   useEffect(() => {
     const qp = new URLSearchParams(window.location.search)
@@ -108,10 +129,11 @@ export default function App() {
         groups: refreshGroups,
         proxies: refreshProxies,
         settings: refreshSettings,
+        statuses: refreshStatuses,
         all: refreshAll
       }
     }),
-    [profiles, deleted, groups, proxies, settings, statuses, apiPort, refreshProfiles, refreshGroups, refreshProxies, refreshSettings, refreshAll]
+    [profiles, deleted, groups, proxies, settings, statuses, apiPort, refreshProfiles, refreshGroups, refreshProxies, refreshSettings, refreshStatuses, refreshAll]
   )
 
   if (authState === 'gate') {

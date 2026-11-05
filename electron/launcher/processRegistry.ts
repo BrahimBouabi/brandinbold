@@ -74,7 +74,14 @@ export class ProcessRegistry {
 
   async stop(profileId: string): Promise<boolean> {
     const entry = this.running.get(profileId)
-    if (!entry) return false
+    if (!entry) {
+      const cur = this.statuses.get(profileId)?.status
+      if (cur && cur !== 'ready') {
+        this.setStatus(profileId, 'ready')
+        return true
+      }
+      return false
+    }
     this.setStatus(profileId, 'stopping')
     try {
       await entry.handle?.stop()

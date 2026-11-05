@@ -1,16 +1,17 @@
-import { execFile, execFileSync, spawn } from 'child_process'
+import { execFileSync } from 'child_process'
 import { app } from 'electron'
 import { EventEmitter } from 'events'
 import { existsSync, readFileSync, readlinkSync, rmSync } from 'fs'
-import { join } from 'path'
-import { Camoufox, launchOptions } from 'camoufox'
+import { basename, join } from 'path'
+import { launchOptions } from 'camoufox'
+import { getActivePath } from 'camoufox/dist/multiversion.js'
+import { ensureCamoufoxInstalled } from 'camoufox/dist/pkgman.js'
 import { firefox, type BrowserContext } from 'playwright-core'
 import type { BrowserEngine } from '../BrowserEngine'
 import type { EngineLaunch, BrowserHandle, ExportedCookie } from '../handle'
-import { buildProfileBundle } from './profileApp'
-import { ensureBundledEngine } from './engineHome'
+import { buildProfileBundle, findCamoufoxApp } from './profileApp'
+import { ensureBundledEngine, setupEngineHome } from './engineHome'
 import { purgeTransientCaches } from '../../launcher/profileCache'
-import { patchWindowTitle } from './badgeExtension'
 import { buildBadgeExtension } from './badgeExtension'
 import type { LaunchResult, Profile, TargetOS } from '@shared/types'
 
@@ -26,21 +27,6 @@ import type { LaunchResult, Profile, TargetOS } from '@shared/types'
  * Fonts are always additive: OS system fonts (incl. Arabic/CJK fallbacks)
  * stay; a profile's custom font list only adds families on top.
  */
-
-/** Resolve the camoufox CLI: dev node_modules/.bin, packaged asar.unpacked, or PATH. */
-function camoufoxBin(): string {
-  const candidates = [
-    join(process.cwd(), 'node_modules', '.bin', 'camoufox'),
-    join(process.resourcesPath ?? '', 'app.asar.unpacked', 'node_modules', '.bin', 'camoufox'),
-    'camoufox'
-  ]
-  for (const c of candidates) {
-    if (c === 'camoufox' || existsSync(c)) return c
-  }
-  return 'camoufox'
-}
-
-const CAMOUFOX_BIN = camoufoxBin()
 
 const engineEvents = new EventEmitter()
 
@@ -74,20 +60,6 @@ async function getHostFonts(): Promise<string[]> {
   return hostFontsCache
 }
 
-function run(cmd: string, args: string[], timeoutMs = 300000): Promise<{ code: number; out: string }> {
-  return new Promise((resolve) => {
-    execFile(
-      cmd,
-      args,
-      { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, env: { ...process.env } },
-      (err, stdout, stderr) => {
-        const out = `${stdout ?? ''}${stderr ?? ''}`
-        resolve({ code: err && (err as any).code == null ? -1 : (err ? (err as any).code : 0), out })
-      }
-    )
-  })
-}
-
 export class CamoufoxEngine extends EventEmitter implements BrowserEngine {
   readonly id = 'camoufox' as const
   readonly name = 'Camoufox (patched Firefox)'
@@ -98,25 +70,38 @@ export class CamoufoxEngine extends EventEmitter implements BrowserEngine {
   }
 
   async installedVersion(): Promise<string | null> {
-    const { code, out } = await run(CAMOUFOX_BIN, ['version'], 30000)
-    if (code !== 0 && !out.trim()) return null
-    const m = out.match(/Browser build:\s*(\S+)/) ?? out.match(/(\d+\.\d+[^\s)]*beta[^\s)]*|\d+\.\d+\.\d+)/)
-    return m ? m[1] : out.trim().split('\n')[0] || null
+    try {
+      setupEngineHome()
+      const active = getActivePath()
+      if (active) {
+        const verFile = join(active, 'version.json')
+        if (existsSync(verFile)) {
+          const data = JSON.parse(readFileSync(verFile, 'utf8')) as { version?: string; build?: string }
+          if (data.version && data.build) return `${data.version}-${data.build}`
+        }
+        return basename(active)
+      }
+      const appPath = findCamoufoxApp()
+      if (appPath) return basename(join(appPath, '..'))
+      return null
+    } catch {
+      return null
+    }
   }
 
   async ensureInstalled(onProgress?: (line: string) => void): Promise<void> {
     onProgress?.('Checking Camoufox browser build…')
-    // Offline Fat-DMG: clone the bundled engine into the engine home first
+    // Self-heal symlink + .0.5_FLAG + clone bundled engine if running from Fat DMG
+    setupEngineHome()
     ensureBundledEngine(join(app.getPath('userData'), 'engine'))
-    const active = await run(CAMOUFOX_BIN, ['active'], 30000)
-    if (active.code === 0 && /not fetched/i.test(active.out) === false && active.out.trim()) {
-      onProgress?.(`Camoufox ${active.out.trim()} already installed`)
+    const active = getActivePath()
+    if (active && existsSync(active)) {
+      onProgress?.(`Camoufox ${basename(active)} already installed`)
       return
     }
     onProgress?.('Downloading Camoufox browser (~200 MB, one-time)…')
-    const fetchRes = await run(CAMOUFOX_BIN, ['fetch'], 900000)
-    onProgress?.(fetchRes.out.trim().split('\n').slice(-3).join(' · ') || 'done')
-    onProgress?.('Camoufox ready')
+    const installedPath = await ensureCamoufoxInstalled()
+    onProgress?.(`Camoufox ready (${basename(installedPath)})`)
   }
 
   async launch(
@@ -124,6 +109,7 @@ export class CamoufoxEngine extends EventEmitter implements BrowserEngine {
     userDataDir: string,
     ipInfo: { timezone?: string; lat?: number; lon?: number; ip?: string } | null
   ): Promise<EngineLaunch> {
+    setupEngineHome()
     cleanStaleFirefoxLocks(userDataDir)
     // TASK 9: pre-launch transient-cache purge (crash leftovers etc.)
     purgeTransientCaches(userDataDir, 'firefox')
@@ -140,7 +126,12 @@ export class CamoufoxEngine extends EventEmitter implements BrowserEngine {
           : 'http'
 
     // Per-profile launcher bundle: unique Dock name + colored Brandinbold icon.
-    const bundle = buildProfileBundle(profile.id, profile.name, profile.color ?? '#8952ef')
+    const bundle = buildProfileBundle(
+      profile.id,
+      profile.name,
+      profile.color ?? '#8952ef',
+      profile.showNameInBrowser !== false
+    )
 
     const restore = profile.startup.restoreSession !== false // default ON
 
@@ -235,11 +226,6 @@ export class CamoufoxEngine extends EventEmitter implements BrowserEngine {
       options.args = [profile.startup.homepage]
     }
 
-    if (bundle && profile.showNameInBrowser !== false) {
-      // window title suffix = profile name (best effort omni.ja brand patch)
-      patchWindowTitle(bundle.appPath, profile.name)
-    }
-
     const badgeDir = buildBadgeExtension({
       id: profile.id,
       name: profile.name,
@@ -273,13 +259,50 @@ export class CamoufoxEngine extends EventEmitter implements BrowserEngine {
       }
     }
 
+    // ---- native config overrides (raw CAMOU_CONFIG keys) ----
+    const config: Record<string, any> = {}
+    if (profile.mediaMask !== false) {
+      config['mediaDevices:webcams'] = profile.media?.videoInputs ?? 1
+      config['mediaDevices:micros'] = profile.media?.audioInputs ?? 1
+      config['mediaDevices:speakers'] = profile.media?.audioOutputs ?? 1
+    }
+    if (profile.hardwareConcurrencyOverride != null) {
+      config['navigator.hardwareConcurrency'] = profile.hardwareConcurrencyOverride
+    }
+    if (profile.doNotTrack) {
+      config['navigator.doNotTrack'] = '1'
+    }
+    if (profile.webrtc === 'real') {
+      // leave the real local/public IPs untouched
+      config['webrtc:ipv4'] = null
+      config['webrtc:localipv4'] = null
+    }
+    // WebGL metadata "Off": report the host GPU (only meaningful when the
+    // profile OS matches the host — the consistency engine warns otherwise).
+    if (profile.fingerprint?.fpgen && (profile as any).webglMeta === 'off') {
+      const hostOs = process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'linux'
+      if (mapOs(profile.os) === hostOs) {
+        delete profile.fingerprint.fpgen.webgl
+      }
+    }
+    if (Object.keys(config).length) {
+      options.config = { ...(options.config ?? {}), ...config }
+    }
+    if (profile.userAgentMode === 'specific' && profile.userAgentVersion) {
+      options.ff_version = profile.userAgentVersion.replace(/[^0-9].*$/, '')
+    }
+    if (profile.customArgsEnabled && profile.customArgs) {
+      const blocked = ['--user-data-dir', '--remote-debugging-address', '--disable-web-security', '--profile', '--headless']
+      const extra = profile.customArgs
+        .split(/\s+/)
+        .filter((a) => a && !blocked.some((b) => a.startsWith(b)))
+      options.args = [...(options.args ?? []), ...extra]
+    }
+
     // Compute the launch options once, then decide who spawns the binary.
     const lo = (await launchOptions(options as any)) as Record<string, any>
 
     // --- Browser UI stays en-US / LTR, always. Page-world locale is separate. ---
-    const pageLangs = profile.navigator.languages?.length
-      ? profile.navigator.languages.join(', ')
-      : 'en-US, en'
     lo.firefoxUserPrefs = {
       ...(lo.firefoxUserPrefs ?? {}),
       // Required for the per-profile badge addon to install and execute
@@ -308,50 +331,7 @@ export class CamoufoxEngine extends EventEmitter implements BrowserEngine {
       'browser.warnOnQuit': false,
       'browser.shell.checkDefaultBrowser': false,
       'browser.startup.homepage_override.mstone': 'ignore',
-      'datareporting.policy.firstRunURL': ''
-    }
-    // PAGE-WORLD locale: Playwright context option (navigator.language(s) and
-    // Accept-Language for pages only — never the browser UI).
-    lo.locale = profile.navigator.languages?.length ? profile.navigator.languages.join(',') : 'en-US'
-    if (customTz) lo.timezoneId = profile.timezone.name
-
-    // ---- native config overrides (raw CAMOU_CONFIG keys) ----
-    const config: Record<string, any> = {}
-    if (profile.mediaMask === false) {
-      // mediaDevices:enabled=false is not a real mode; masking is native and
-      // the counts below shape the spoofed device list.
-    }
-    if (profile.mediaMask !== false) {
-      config['mediaDevices:webcams'] = profile.media?.videoInputs ?? 1
-      config['mediaDevices:micros'] = profile.media?.audioInputs ?? 1
-      config['mediaDevices:speakers'] = profile.media?.audioOutputs ?? 1
-    }
-    if (profile.hardwareConcurrencyOverride != null) {
-      config['navigator.hardwareConcurrency'] = profile.hardwareConcurrencyOverride
-    }
-    if (profile.doNotTrack) {
-      config['navigator.doNotTrack'] = '1'
-    }
-    if (profile.webrtc === 'real') {
-      // leave the real local/public IPs untouched
-      config['webrtc:ipv4'] = null
-      config['webrtc:localipv4'] = null
-    }
-    // WebGL metadata "Off": report the host GPU (only meaningful when the
-    // profile OS matches the host — the consistency engine warns otherwise).
-    if (profile.fingerprint?.fpgen && (profile as any).webglMeta === 'off') {
-      const hostOs = process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'linux'
-      if (mapOs(profile.os) === hostOs) {
-        delete profile.fingerprint.fpgen.webgl
-      }
-    }
-    if (Object.keys(config).length) {
-      options.config = { ...(options.config ?? {}), ...config }
-    }
-
-    // ---- browser prefs for the remaining switches ----
-    lo.firefoxUserPrefs = {
-      ...(lo.firefoxUserPrefs ?? {}),
+      'datareporting.policy.firstRunURL': '',
       ...(profile.dnsEnabled && profile.dnsServer
         ? {
             'network.trr.mode': 2,
@@ -369,35 +349,21 @@ export class CamoufoxEngine extends EventEmitter implements BrowserEngine {
         : {}),
       // UI language: follow navigator language ONLY when explicitly enabled
       // (default OFF — the UI always stays en-US/LTR otherwise).
-      ...((profile.uiFollowNavigatorLanguage && profile.navigator.languages?.length)
+      ...(profile.uiFollowNavigatorLanguage && profile.navigator.languages?.length
         ? { 'intl.locale.requested': profile.navigator.languages[0] }
         : {})
     }
-    if (profile.userAgentMode === 'specific' && profile.userAgentVersion) {
-      options.ff_version = profile.userAgentVersion.replace(/[^0-9].*$/, '')
-    }
-    // "match" == the engine build's own version, which is what the launcher
-    // already presents; "latest" is the default native behavior.
-    if (profile.customArgsEnabled && profile.customArgs) {
-      const blocked = ['--user-data-dir', '--remote-debugging-address', '--disable-web-security', '--profile', '--headless']
-      const extra = profile.customArgs
-        .split('\s+')
-        .filter((a) => a && !blocked.some((b) => a.startsWith(b)))
-      options.args = [...(options.args ?? []), ...extra]
-    }
+    // PAGE-WORLD locale: Playwright context option (navigator.language(s) and
+    // Accept-Language for pages only — never the browser UI).
+    lo.locale = profile.navigator.languages?.length ? profile.navigator.languages.join(',') : 'en-US'
+    if (customTz) lo.timezoneId = profile.timezone.name
 
-    let context: BrowserContext
     if (bundle) {
       // Spawn the per-profile wrapper bundle so macOS shows the profile's
       // own name + colored Brandinbold icon in the Dock.
       lo.executablePath = bundle.executablePath
-      context = (await firefox.launchPersistentContext(userDataDir, lo as any)) as BrowserContext
-    } else {
-      // Linux/Windows or wrapper build failed: stock launch path.
-      lo.persistent_context = true
-      lo.user_data_dir = userDataDir
-      context = (await Camoufox(lo as any)) as unknown as BrowserContext
     }
+    const context = (await firefox.launchPersistentContext(userDataDir, lo as any)) as BrowserContext
 
     const pid = await findFirefoxPid(userDataDir)
     // Session restore can bring back the old broken `127.0.0.1/?q=` tabs
@@ -512,7 +478,7 @@ function buildHandle(profileId: string, context: BrowserContext, userDataDir: st
 
 function listProfilePids(userDataDir: string): number[] {
   try {
-    const out = execFileSync('pgrep', ['-f', userDataDir.replace(/\s/g, '\\ ')], { timeout: 10000 })
+    const out = execFileSync('pgrep', ['-f', userDataDir], { timeout: 10000 })
       .toString()
       .split('\n')
       .filter(Boolean)
