@@ -1,4 +1,4 @@
-import { Avatar, Dropdown, Popover, Radio, Segmented, Switch, Typography, message } from 'antd'
+import { Avatar, Dropdown, Input, Modal, Popover, Radio, Segmented, Switch, Typography, message } from 'antd'
 import {
   UserOutlined,
   RightOutlined,
@@ -11,7 +11,8 @@ import {
   AppstoreOutlined,
   QuestionCircleOutlined,
   ReloadOutlined,
-  LogoutOutlined
+  LogoutOutlined,
+  MoreOutlined
 } from '@ant-design/icons'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
@@ -276,10 +277,17 @@ export function Sidebar({
   onToggleTheme: (mode: 'system' | 'light' | 'dark') => void
 }) {
   const { t } = useTranslation()
-  const { profiles, groups, refresh } = useApp()
+  const { profiles, deleted, groups, profileFilter, setProfileFilter, refresh } = useApp()
   const [collapsed, setCollapsed] = useState(false)
   const [profilesOpen, setProfilesOpen] = useState(true)
   const [proxiesOpen, setProxiesOpen] = useState(false)
+  const [groupModal, setGroupModal] = useState<{
+    id?: string
+    name: string
+    color: string
+    description: string
+    pinned: boolean
+  } | null>(null)
   const bg = isDark ? '#171a21' : '#ffffff'
   const itemStyle = (active: boolean): React.CSSProperties => ({
     display: 'flex',
@@ -295,7 +303,45 @@ export function Sidebar({
     color: active ? BRAND.accent : 'inherit',
     justifyContent: collapsed ? 'center' : 'flex-start'
   })
-  const unassigned = profiles.filter((p) => !p.groupId).length
+  const validGroupIds = new Set(groups.map((g) => g.id))
+  const unassigned = profiles.filter((p) => !p.groupId || !validGroupIds.has(p.groupId)).length
+
+  const saveGroupModal = async () => {
+    if (!groupModal || !groupModal.name.trim()) {
+      message.warning('Group name is required')
+      return
+    }
+    const cleanName = groupModal.name.trim()
+    if (groupModal.id) {
+      await rea.groups.rename(groupModal.id, cleanName)
+      await rea.groups.pin(groupModal.id, groupModal.pinned)
+      await rea.groups.updateMeta?.(groupModal.id, groupModal.color, groupModal.description)
+      message.success('Group updated')
+    } else {
+      const created = await rea.groups.create(cleanName, groupModal.pinned, groupModal.color, groupModal.description)
+      if (created?.id) {
+        setProfileFilter(created.id)
+        onNavigate('profiles')
+      }
+      message.success('Group created')
+    }
+    setGroupModal(null)
+    await refresh.groups()
+  }
+
+  const deleteGroupFromSidebar = (g: any) => {
+    Modal.confirm({
+      title: `${t('groups.deleteConfirm')} (${g.name})`,
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        await rea.groups.delete(g.id)
+        if (profileFilter === g.id) setProfileFilter('all')
+        await refresh.groups()
+        await refresh.profiles()
+        message.success('Group deleted — profiles moved to Unassigned')
+      }
+    })
+  }
 
   return (
     <aside
@@ -322,7 +368,13 @@ export function Sidebar({
 
       <div style={{ flex: 1, overflowY: 'auto', paddingBottom: 8 }}>
         {/* Profiles (expandable) */}
-        <div style={itemStyle(page === 'profiles')} onClick={() => onNavigate('profiles')}>
+        <div
+          style={itemStyle(page === 'profiles')}
+          onClick={() => {
+            onNavigate('profiles')
+            if (!profilesOpen) setProfilesOpen(true)
+          }}
+        >
           <UserOutlined />
           {!collapsed && <span style={{ flex: 1 }}>{t('nav.profiles')}</span>}
           {!collapsed && (
@@ -337,23 +389,66 @@ export function Sidebar({
             </span>
           )}
         </div>
-        {page === 'profiles' && profilesOpen && !collapsed && (
+        {profilesOpen && !collapsed && (
           <div style={{ marginLeft: 30, borderLeft: '2px solid rgba(124,58,237,0.25)', paddingLeft: 6 }}>
-            <SubItem label={`${t('nav.all')} (${profiles.length})`} active onClick={() => onNavigate('profiles')} />
-            <SubItem label={`${t('nav.unassigned')} (${unassigned})`} />
+            <SubItem
+              label={`${t('nav.all')} (${profiles.length})`}
+              active={page === 'profiles' && profileFilter === 'all'}
+              onClick={() => {
+                setProfileFilter('all')
+                onNavigate('profiles')
+              }}
+            />
+            <SubItem
+              label={`${t('nav.unassigned')} (${unassigned})`}
+              active={page === 'profiles' && profileFilter === 'unassigned'}
+              onClick={() => {
+                setProfileFilter('unassigned')
+                onNavigate('profiles')
+              }}
+            />
             {groups.filter((g) => g.pinned).map((g) => (
-              <SubItem key={g.id} label={`${g.name} (${profiles.filter((p) => p.groupId === g.id).length})`} pin color={g.color} onClick={() => onNavigate('profiles')} />
+              <SubItem
+                key={g.id}
+                label={`${g.name} (${profiles.filter((p) => p.groupId === g.id).length})`}
+                pin
+                color={g.color}
+                active={page === 'profiles' && profileFilter === g.id}
+                onClick={() => {
+                  setProfileFilter(g.id)
+                  onNavigate('profiles')
+                }}
+                onEdit={() => setGroupModal({ id: g.id, name: g.name, color: g.color || '#8952ef', description: g.description || '', pinned: !!g.pinned })}
+                onTogglePin={async () => {
+                  await rea.groups.pin(g.id, !g.pinned)
+                  await refresh.groups()
+                }}
+                onDelete={() => deleteGroupFromSidebar(g)}
+              />
             ))}
             {groups.filter((g) => !g.pinned).map((g) => (
-              <SubItem key={g.id} label={`${g.name} (${profiles.filter((p) => p.groupId === g.id).length})`} color={g.color} onClick={() => onNavigate('profiles')} />
+              <SubItem
+                key={g.id}
+                label={`${g.name} (${profiles.filter((p) => p.groupId === g.id).length})`}
+                color={g.color}
+                active={page === 'profiles' && profileFilter === g.id}
+                onClick={() => {
+                  setProfileFilter(g.id)
+                  onNavigate('profiles')
+                }}
+                onEdit={() => setGroupModal({ id: g.id, name: g.name, color: g.color || '#8952ef', description: g.description || '', pinned: !!g.pinned })}
+                onTogglePin={async () => {
+                  await rea.groups.pin(g.id, !g.pinned)
+                  await refresh.groups()
+                }}
+                onDelete={() => deleteGroupFromSidebar(g)}
+              />
             ))}
-            <SubItem label={t('nav.createGroup')} plus onClick={async () => {
-              const name = window.prompt(t('groups.groupName'))
-              if (name) {
-                await rea.groups.create(name)
-                await refresh.groups()
-              }
-            }} />
+            <SubItem
+              label={t('nav.createGroup')}
+              plus
+              onClick={() => setGroupModal({ name: '', color: '#8952ef', description: '', pinned: false })}
+            />
           </div>
         )}
 
@@ -376,7 +471,6 @@ export function Sidebar({
         {page === 'proxies' && proxiesOpen && !collapsed && (
           <div style={{ marginLeft: 30, borderLeft: '2px solid rgba(124,58,237,0.25)', paddingLeft: 6 }}>
             <SubItem label={t('proxies.allProxies')} active onClick={() => onNavigate('proxies')} />
-            <SubItem label={t('nav.createGroup')} plus />
           </div>
         )}
 
@@ -398,12 +492,68 @@ export function Sidebar({
         </div>
         <div style={itemStyle(page === 'trash')} onClick={() => onNavigate('trash')}>
           <DeleteOutlined />
-          {!collapsed && <span>{t('nav.trash')}</span>}
+          {!collapsed && (
+            <span style={{ flex: 1 }}>
+              {t('nav.trash')}
+              {deleted.length > 0 ? ` (${deleted.length})` : ''}
+            </span>
+          )}
         </div>
       </div>
 
       {ENABLE_PLAN_LIMITS && <PlanCard />}
       <UserBlock collapsed={collapsed} />
+
+      <Modal
+        open={!!groupModal}
+        title={groupModal?.id ? t('groups.editTitle') : t('groups.newTitle')}
+        onCancel={() => setGroupModal(null)}
+        onOk={() => void saveGroupModal()}
+        okText={t('proxies.save')}
+      >
+        {groupModal && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <Input
+              placeholder={t('groups.groupName')}
+              value={groupModal.name}
+              onChange={(e) => setGroupModal({ ...groupModal, name: e.target.value })}
+              onPressEnter={() => void saveGroupModal()}
+              autoFocus
+            />
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <span style={{ fontSize: 12.5, opacity: 0.65 }}>{t('groups.color')}</span>
+              {['#8952ef', '#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#06b6d4', '#84cc16'].map((c) => (
+                <span
+                  key={c}
+                  onClick={() => setGroupModal({ ...groupModal, color: c })}
+                  style={{
+                    width: 20,
+                    height: 20,
+                    borderRadius: 10,
+                    background: c,
+                    cursor: 'pointer',
+                    outline: groupModal.color === c ? '2px solid rgba(137,82,239,0.6)' : 'none',
+                    outlineOffset: 2
+                  }}
+                />
+              ))}
+            </div>
+            <Input
+              placeholder={t('groups.description')}
+              value={groupModal.description}
+              onChange={(e) => setGroupModal({ ...groupModal, description: e.target.value })}
+            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <Switch
+                size="small"
+                checked={groupModal.pinned}
+                onChange={(v) => setGroupModal({ ...groupModal, pinned: v })}
+              />
+              <span style={{ fontSize: 12.5 }}>Pin group to Profiles topbar</span>
+            </div>
+          </div>
+        )}
+      </Modal>
     </aside>
   )
 }
@@ -414,7 +564,10 @@ function SubItem({
   pin,
   plus,
   color,
-  onClick
+  onClick,
+  onEdit,
+  onTogglePin,
+  onDelete
 }: {
   label: string
   active?: boolean
@@ -422,7 +575,11 @@ function SubItem({
   plus?: boolean
   color?: string
   onClick?: () => void
+  onEdit?: () => void
+  onTogglePin?: () => void
+  onDelete?: () => void
 }) {
+  const hasMenu = !!(onEdit || onTogglePin || onDelete)
   return (
     <div
       onClick={onClick}
@@ -443,8 +600,34 @@ function SubItem({
       {color && !plus && (
         <span style={{ width: 8, height: 8, borderRadius: 4, background: color, flex: 'none' }} />
       )}
-      <span style={{ flex: 1 }}>{label}</span>
+      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
       {pin && <span style={{ fontSize: 10, opacity: 0.5 }}>📌</span>}
+      {hasMenu && (
+        <Dropdown
+          trigger={['click']}
+          menu={{
+            items: [
+              ...(onEdit ? [{ key: 'edit', label: 'Edit / Rename' }] : []),
+              ...(onTogglePin ? [{ key: 'pin', label: pin ? 'Unpin from topbar' : 'Pin to topbar' }] : []),
+              ...(onDelete ? [{ key: 'delete', label: 'Delete group', danger: true }] : [])
+            ],
+            onClick: ({ key, domEvent }) => {
+              domEvent.stopPropagation()
+              if (key === 'edit') onEdit?.()
+              else if (key === 'pin') onTogglePin?.()
+              else if (key === 'delete') onDelete?.()
+            }
+          }}
+        >
+          <span
+            onClick={(e) => e.stopPropagation()}
+            style={{ opacity: 0.55, padding: '0 2px', fontSize: 12 }}
+            title="Group options"
+          >
+            <MoreOutlined />
+          </span>
+        </Dropdown>
+      )}
     </div>
   )
 }

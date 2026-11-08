@@ -44,6 +44,8 @@ export interface AppState {
   statuses: Record<string, ProfileStatus>
   apiPort: number | null
   cloudStatus: CloudStatusState | null
+  profileFilter: string
+  setProfileFilter: (filter: string) => void
   openAuthGate: () => void
   refresh: {
     profiles: () => Promise<void>
@@ -62,6 +64,7 @@ export const useApp = (): AppState => useContext(Ctx)!
 export default function App() {
   const { t } = useTranslation()
   const [page, setPage] = useState<string>(new URLSearchParams(window.location.search).get('page') ?? 'profiles')
+  const [profileFilter, setProfileFilter] = useState<string>(new URLSearchParams(window.location.search).get('tab') ?? 'all')
   const [profiles, setProfiles] = useState<Profile[]>([])
   const [deleted, setDeleted] = useState<Profile[]>([])
   const [groups, setGroups] = useState<Group[]>([])
@@ -180,6 +183,8 @@ export default function App() {
       statuses,
       apiPort,
       cloudStatus,
+      profileFilter,
+      setProfileFilter,
       openAuthGate,
       refresh: {
         profiles: refreshProfiles,
@@ -200,6 +205,7 @@ export default function App() {
       statuses,
       apiPort,
       cloudStatus,
+      profileFilter,
       openAuthGate,
       refreshProfiles,
       refreshGroups,

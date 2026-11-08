@@ -140,6 +140,7 @@ export interface Profile {
   fingerprint: PinnedFingerprint | null
   lastLaunchedAt: string | null
   browserVersion: string | null
+  deletedAt?: string | null
   createdAt: string
   updatedAt: string
 }

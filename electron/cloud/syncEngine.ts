@@ -78,8 +78,8 @@ export async function pullAndMerge(client: CloudClient, store: LocalStore): Prom
     summary.pulled.profiles++
     if (pendingIds.has(doc.id)) continue // deleted here, tombstone not pushed yet
     const local = store.get(doc.id)
-    if (local && store.isTrashed(doc.id)) continue
-    if (local && ms(doc.updatedAt) <= ms(local.updatedAt)) continue
+    if (local && store.isTrashed(doc.id) && ms(doc.updatedAt) <= ms(local.deletedAt ?? local.updatedAt)) continue
+    if (local && !store.isTrashed(doc.id) && ms(doc.updatedAt) <= ms(local.updatedAt)) continue
     if (local && store.isRunning(doc.id)) continue // never rewrite a running profile
     try {
       store.save(local ? { ...doc, id: local.id } : doc, { keepUpdatedAt: true })

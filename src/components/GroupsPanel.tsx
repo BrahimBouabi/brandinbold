@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Button, Dropdown, Input, Modal, Popover, Space, Table, message } from 'antd'
+import { Button, Dropdown, Input, Modal, Popover, Space, Switch, Table, message } from 'antd'
 import {
   CaretRightOutlined,
   FolderOutlined,
@@ -19,20 +19,22 @@ export function GroupsPanel({ onGoToGroup }: { onGoToGroup: (groupId: string) =>
   const { t } = useTranslation()
   const { groups, profiles, refresh } = useApp()
   const [search, setSearch] = useState('')
-  const [editing, setEditing] = useState<{ id?: string; name: string; color: string; description: string } | null>(null)
+  const [editing, setEditing] = useState<{ id?: string; name: string; color: string; description: string; pinned?: boolean } | null>(null)
 
+  const validGroupIds = new Set(groups.map((g) => g.id))
   const rows = groups
     .filter((g) => g.name.toLowerCase().includes(search.toLowerCase()))
     .map((g) => ({ ...g, key: g.id, count: profiles.filter((p) => p.groupId === g.id).length }))
 
   const save = async () => {
     if (!editing || !editing.name.trim()) return
+    const cleanName = editing.name.trim()
     if (editing.id) {
-      await rea.groups.rename(editing.id, editing.name)
-      // color/description via create-side channel: use rename + pin passthrough
+      await rea.groups.rename(editing.id, cleanName)
+      await rea.groups.pin(editing.id, !!editing.pinned)
       await rea.groups.updateMeta?.(editing.id, editing.color, editing.description)
     } else {
-      await rea.groups.create(editing.name, false, editing.color, editing.description)
+      await rea.groups.create(cleanName, !!editing.pinned, editing.color, editing.description)
     }
     setEditing(null)
     await refresh.groups()
@@ -88,7 +90,27 @@ export function GroupsPanel({ onGoToGroup }: { onGoToGroup: (groupId: string) =>
             render: (_: any, r: any) => (
               <Space size={4}>
                 <Button size="small" onClick={() => onGoToGroup(r.id)}>{t('groups.goTo')}</Button>
-                <Button size="small" onClick={() => setEditing({ id: r.id, name: r.name, color: r.color, description: r.description })}>
+                <Button
+                  size="small"
+                  onClick={async () => {
+                    await rea.groups.pin(r.id, !r.pinned)
+                    await refresh.groups()
+                  }}
+                >
+                  {r.pinned ? 'Unpin' : 'Pin'}
+                </Button>
+                <Button
+                  size="small"
+                  onClick={() =>
+                    setEditing({
+                      id: r.id,
+                      name: r.name,
+                      color: r.color,
+                      description: r.description,
+                      pinned: !!r.pinned
+                    })
+                  }
+                >
                   {t('groups.edit')}
                 </Button>
                 <Button
@@ -119,7 +141,7 @@ export function GroupsPanel({ onGoToGroup }: { onGoToGroup: (groupId: string) =>
             <span style={{ width: 10, height: 10, borderRadius: 5, border: '1px dashed #888' }} />
             <b>{t('groups.unassigned')}</b>
             <span style={{ opacity: 0.55, fontSize: 12.5 }}>
-              {profiles.filter((p) => !p.groupId).length}
+              {profiles.filter((p) => !p.groupId || !validGroupIds.has(p.groupId)).length}
             </span>
             <div style={{ marginLeft: 'auto' }}>
               <Button size="small" onClick={() => onGoToGroup('unassigned')}>{t('groups.goTo')}</Button>
@@ -161,6 +183,14 @@ export function GroupsPanel({ onGoToGroup }: { onGoToGroup: (groupId: string) =>
               value={editing.description}
               onChange={(e) => setEditing({ ...editing, description: e.target.value })}
             />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <Switch
+                size="small"
+                checked={!!editing.pinned}
+                onChange={(v) => setEditing({ ...editing, pinned: v })}
+              />
+              <span style={{ fontSize: 12.5 }}>Pin group to Profiles topbar</span>
+            </div>
           </div>
         )}
       </Modal>

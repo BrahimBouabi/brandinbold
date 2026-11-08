@@ -126,6 +126,7 @@ function createWindow(): void {
 
 // ---------- profiles ----------
 ipcMain.handle('profiles:list', () => store.list())
+ipcMain.handle('profiles:listDeleted', () => store.listDeleted())
 ipcMain.handle('profiles:create', (_e, name: string) => { const p = store.create(name || 'New profile'); scheduleCloudPush(); return p })
 ipcMain.handle('profiles:save', (_e, profile: any) => { const saved = store.save(profile); scheduleCloudPush(); return saved })
 ipcMain.handle('profiles:trash', (_e, id: string) => {
@@ -144,11 +145,25 @@ ipcMain.handle('profiles:restore', (_e, id: string) => {
   }
   return ok
 })
-ipcMain.handle('profiles:purge', (_e, id: string) => {
+ipcMain.handle('profiles:purge', async (_e, id: string) => {
   if (registry.get(id)) throw new Error('Profile is running')
   queueCloudDelete('profiles', id)
+  const ok = store.purge(id)
+  await rm(join(app.getPath('userData'), 'profiles', id), { recursive: true, force: true }).catch(() => {})
   scheduleCloudPush()
-  return store.purge(id)
+  return ok
+})
+ipcMain.handle('profiles:emptyTrash', async () => {
+  const deleted = store.listDeleted()
+  let count = 0
+  for (const p of deleted) {
+    if (registry.get(p.id)) continue
+    queueCloudDelete('profiles', p.id)
+    if (store.purge(p.id)) count++
+    await rm(join(app.getPath('userData'), 'profiles', p.id), { recursive: true, force: true }).catch(() => {})
+  }
+  if (count > 0) scheduleCloudPush()
+  return count
 })
 ipcMain.handle('profiles:generate', async (_e, profile: any) => {
   const pinned = await regenerateFingerprint(profile)
@@ -512,6 +527,12 @@ app.whenReady().then(() => {
     (id) => !!registry.get(id),
     (status, detail) => push('cloud-event', '', status, detail)
   )
+  // Step 2: 30-day auto-purge of expired Trash profiles
+  const expiredIds = store.autoPurgeExpiredTrash(30)
+  for (const eid of expiredIds) {
+    queueCloudDelete('profiles', eid)
+    void rm(join(app.getPath('userData'), 'profiles', eid), { recursive: true, force: true }).catch(() => {})
+  }
   applyEngineSetting()
   createWindow()
   // dev-only screenshot hook: REA_SHOT=/path.png captures the renderer and quits

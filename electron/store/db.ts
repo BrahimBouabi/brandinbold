@@ -83,42 +83,61 @@ export class ProfileStore {
     if (gcols.length && !gcols.some((c) => c.name === 'updated_at')) {
       this.db.exec('ALTER TABLE groups ADD COLUMN updated_at TEXT')
     }
+    // Step 2: clean up any dangling groupId references in profiles (SQL + JSON)
+    this.db.exec(`
+      UPDATE profiles
+      SET group_id = NULL,
+          json = json_set(json, '$.groupId', null)
+      WHERE (group_id IS NOT NULL AND group_id NOT IN (SELECT id FROM groups))
+         OR (json_extract(json, '$.groupId') IS NOT NULL AND json_extract(json, '$.groupId') NOT IN (SELECT id FROM groups));
+    `)
   }
 
   // ---------- profiles ----------
   list(includeDeleted = false): Profile[] {
     const rows = this.db
       .prepare(
-        `SELECT json FROM profiles ${includeDeleted ? '' : 'WHERE deleted_at IS NULL'} ORDER BY updated_at DESC`
+        `SELECT json, deleted_at FROM profiles ${includeDeleted ? '' : 'WHERE deleted_at IS NULL'} ORDER BY updated_at DESC`
       )
-      .all() as { json: string }[]
-    return rows.map((r) => JSON.parse(r.json) as Profile)
+      .all() as { json: string; deleted_at: string | null }[]
+    return rows.map((r) => {
+      const p = JSON.parse(r.json) as Profile
+      if (r.deleted_at) p.deletedAt = r.deleted_at
+      return p
+    })
   }
 
   listDeleted(): Profile[] {
     const rows = this.db
-      .prepare('SELECT json FROM profiles WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC')
-      .all() as { json: string }[]
-    return rows.map((r) => JSON.parse(r.json) as Profile)
+      .prepare('SELECT json, deleted_at FROM profiles WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC')
+      .all() as { json: string; deleted_at: string }[]
+    return rows.map((r) => ({ ...(JSON.parse(r.json) as Profile), deletedAt: r.deleted_at }))
   }
 
   get(id: string): Profile | null {
-    const row = this.db.prepare('SELECT json FROM profiles WHERE id = ?').get(id) as
-      | { json: string }
+    const row = this.db.prepare('SELECT json, deleted_at FROM profiles WHERE id = ?').get(id) as
+      | { json: string; deleted_at: string | null }
       | undefined
-    return row ? (JSON.parse(row.json) as Profile) : null
+    if (!row) return null
+    const p = JSON.parse(row.json) as Profile
+    p.deletedAt = row.deleted_at ?? null
+    return p
   }
 
   /** keepUpdatedAt: cloud merges keep the remote timestamp (newer-wins sync). */
   save(profile: Profile, opts: { keepUpdatedAt?: boolean } = {}): Profile {
     const now = new Date().toISOString()
-    const p = { ...profile, updatedAt: opts.keepUpdatedAt && profile.updatedAt ? profile.updatedAt : now }
+    const p: Profile = {
+      ...profile,
+      deletedAt: null,
+      updatedAt: opts.keepUpdatedAt && profile.updatedAt ? profile.updatedAt : now
+    }
     this.db
       .prepare(
         `INSERT INTO profiles (id, name, status, group_id, deleted_at, created_at, updated_at, json)
          VALUES (@id, @name, 'ready', @groupId, NULL, @createdAt, @updatedAt, @json)
          ON CONFLICT(id) DO UPDATE SET
-           name = @name, group_id = @groupId, updated_at = @updatedAt, json = @json`
+           name = @name, group_id = @groupId, deleted_at = NULL, updated_at = @updatedAt, json = @json`
       )
       .run({
         id: p.id,
@@ -132,9 +151,12 @@ export class ProfileStore {
   }
 
   trash(id: string): boolean {
+    const now = new Date().toISOString()
     const res = this.db
-      .prepare("UPDATE profiles SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL")
-      .run(new Date().toISOString(), id)
+      .prepare(
+        "UPDATE profiles SET deleted_at = ?, updated_at = ?, json = json_set(json, '$.deletedAt', ?, '$.updatedAt', ?) WHERE id = ? AND deleted_at IS NULL"
+      )
+      .run(now, now, now, now, id)
     return res.changes > 0
   }
 
@@ -142,7 +164,9 @@ export class ProfileStore {
   restore(id: string): boolean {
     const now = new Date().toISOString()
     const res = this.db
-      .prepare("UPDATE profiles SET deleted_at = NULL, updated_at = ?, json = json_set(json, '$.updatedAt', ?) WHERE id = ?")
+      .prepare(
+        "UPDATE profiles SET deleted_at = NULL, updated_at = ?, json = json_set(json, '$.deletedAt', null, '$.updatedAt', ?) WHERE id = ? AND deleted_at IS NOT NULL"
+      )
       .run(now, now, id)
     return res.changes > 0
   }
@@ -155,6 +179,20 @@ export class ProfileStore {
   purge(id: string): boolean {
     const res = this.db.prepare('DELETE FROM profiles WHERE id = ?').run(id)
     return res.changes > 0
+  }
+
+  /** Purge trashed profiles older than retentionDays (default 30 days). Returns purged profile IDs. */
+  autoPurgeExpiredTrash(retentionDays = 30): string[] {
+    const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString()
+    const expired = this.db
+      .prepare('SELECT id FROM profiles WHERE deleted_at IS NOT NULL AND deleted_at < ?')
+      .all(cutoff) as { id: string }[]
+    if (!expired.length) return []
+    const delStmt = this.db.prepare('DELETE FROM profiles WHERE id = ?')
+    for (const r of expired) {
+      delStmt.run(r.id)
+    }
+    return expired.map((r) => r.id)
   }
 
   create(name: string): Profile {
@@ -266,7 +304,12 @@ export class ProfileStore {
   }
 
   deleteGroup(id: string): void {
-    this.db.prepare('UPDATE profiles SET group_id = NULL WHERE group_id = ?').run(id)
+    const now = new Date().toISOString()
+    this.db
+      .prepare(
+        "UPDATE profiles SET group_id = NULL, updated_at = ?, json = json_set(json, '$.groupId', null, '$.updatedAt', ?) WHERE group_id = ? OR json_extract(json, '$.groupId') = ?"
+      )
+      .run(now, now, id, id)
     this.db.prepare('DELETE FROM groups WHERE id = ?').run(id)
   }
 

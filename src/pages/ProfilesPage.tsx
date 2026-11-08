@@ -47,8 +47,7 @@ const statusColor: Record<string, string> = {
 
 export function ProfilesPage() {
   const { t } = useTranslation()
-  const { profiles, groups, proxies, settings, statuses, cloudStatus, refresh } = useApp()
-  const [tab, setTab] = useState<string>('all')
+  const { profiles, groups, proxies, settings, statuses, cloudStatus, profileFilter: tab, setProfileFilter: setTab, refresh } = useApp()
   const [search, setSearch] = useState('')
   const [condensed, setCondensed] = useState(false)
   const [selected, setSelected] = useState<React.Key[]>([])
@@ -92,9 +91,10 @@ export function ProfilesPage() {
 
   const rows = useMemo(() => {
     let list = [...profiles]
-    if (tab === 'unassigned') list = list.filter((p) => !p.groupId)
-    if (tab === 'groups') list = list.filter((p) => !!p.groupId)
-    if ((groups.some((g) => g.id === tab))) list = list.filter((p) => p.groupId === tab)
+    const validGroupIds = new Set(groups.map((g) => g.id))
+    if (tab === 'unassigned') list = list.filter((p) => !p.groupId || !validGroupIds.has(p.groupId))
+    if (tab === 'groups') list = list.filter((p) => !!p.groupId && validGroupIds.has(p.groupId))
+    if (validGroupIds.has(tab)) list = list.filter((p) => p.groupId === tab)
     if (search.trim()) {
       const q = search.trim().toLowerCase()
       list = list.filter(
@@ -206,7 +206,47 @@ export function ProfilesPage() {
     group: {
       title: t('profiles.group'),
       key: 'group',
-      render: (_, p) => groups.find((g) => g.id === p.groupId)?.name ?? '—'
+      render: (_, p) => {
+        const g = groups.find((x) => x.id === p.groupId)
+        return (
+          <Dropdown
+            trigger={['click']}
+            menu={{
+              items: [
+                { key: 'none', label: t('newProfile.noGroup') },
+                ...groups.map((grp) => ({
+                  key: grp.id,
+                  label: (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 4, background: grp.color ?? '#8952ef' }} />
+                      {grp.name}
+                    </span>
+                  )
+                }))
+              ],
+              onClick: async ({ key }) => {
+                const list = await rea.profiles.list()
+                const cur = list.find((x: any) => x.id === p.id)
+                if (cur) {
+                  await rea.profiles.save({ ...cur, groupId: key === 'none' ? null : key })
+                  await refresh.profiles()
+                }
+              }
+            }}
+          >
+            <a style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: 'inherit' }}>
+              {g ? (
+                <>
+                  <span style={{ width: 8, height: 8, borderRadius: 4, background: g.color ?? '#8952ef' }} />
+                  <span>{g.name}</span>
+                </>
+              ) : (
+                <span style={{ opacity: 0.55 }}>—</span>
+              )}
+            </a>
+          </Dropdown>
+        )
+      }
     },
     tags: {
       title: t('profiles.tags'),
@@ -571,7 +611,17 @@ export function ProfilesPage() {
       items: [
         { key: 'edit', label: 'Edit' },
         { key: 'sync', label: 'Start Synchronizer (As Main)' },
-        { key: 'movegroup', label: 'Move to Group' },
+        {
+          key: 'movegroup',
+          label: 'Move to Group',
+          children: [
+            { key: 'mg:none', label: 'Unassigned (No group)' },
+            ...groups.map((g) => ({
+              key: `mg:${g.id}`,
+              label: `${g.name}${p.groupId === g.id ? ' ✓' : ''}`
+            }))
+          ]
+        },
         { key: 'pin', label: p.pinned ? 'Unpin' : 'Pin to Top' },
         { key: 'tags', label: 'Manage tags' },
         { type: 'divider' as const },
@@ -619,20 +669,18 @@ export function ProfilesPage() {
       ],
       onClick: async ({ key }: { key: string }) => {
         const reload = async () => { await refresh.profiles() }
+        if (key.startsWith('mg:')) {
+          const targetId = key === 'mg:none' ? null : key.slice(3)
+          const list = await rea.profiles.list()
+          const cur = list.find((x: any) => x.id === p.id)
+          if (cur) await rea.profiles.save({ ...cur, groupId: targetId })
+          await reload()
+          message.success(targetId ? 'Moved to group' : 'Moved to Unassigned')
+          return
+        }
         switch (key) {
           case 'edit': setEditingProfile(p); break
           case 'sync': message.info('Synchronizer — coming soon'); break
-          case 'movegroup': {
-            const pick = window.prompt(`Move "${p.name}" to group (name, empty = Unassigned):`, groups[0]?.name ?? '')
-            if (pick !== null) {
-              const g = groups.find((x) => x.name.toLowerCase() === pick.trim().toLowerCase())
-              const list = await rea.profiles.list()
-              const cur = list.find((x: any) => x.id === p.id)
-              if (cur) await rea.profiles.save({ ...cur, groupId: g?.id ?? null })
-              await reload()
-            }
-            break
-          }
           case 'pin': {
             const list = await rea.profiles.list()
             const cur = list.find((x: any) => x.id === p.id)

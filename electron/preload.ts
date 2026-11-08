@@ -4,11 +4,13 @@ import type { AppSettings, Profile } from '@shared/types'
 const api = {
   profiles: {
     list: (): Promise<Profile[]> => ipcRenderer.invoke('profiles:list'),
+    listDeleted: (): Promise<Profile[]> => ipcRenderer.invoke('profiles:listDeleted'),
     create: (name: string): Promise<Profile> => ipcRenderer.invoke('profiles:create', name),
     save: (profile: Profile): Promise<Profile> => ipcRenderer.invoke('profiles:save', profile),
     trash: (id: string): Promise<boolean> => ipcRenderer.invoke('profiles:trash', id),
     restore: (id: string): Promise<boolean> => ipcRenderer.invoke('profiles:restore', id),
     purge: (id: string): Promise<boolean> => ipcRenderer.invoke('profiles:purge', id),
+    emptyTrash: (): Promise<number> => ipcRenderer.invoke('profiles:emptyTrash'),
     generate: (profile: Profile): Promise<Profile> => ipcRenderer.invoke('profiles:generate', profile),
     importPreview: (text: string): Promise<any> => ipcRenderer.invoke('profiles:importPreview', text),
     storageInfo: (): Promise<any> => ipcRenderer.invoke('profiles:storageInfo'),
@@ -27,8 +29,8 @@ const api = {
   status: (id: string): Promise<{ status: string; detail?: string }> => ipcRenderer.invoke('status:get', id),
   groups: {
     list: (): Promise<any[]> => ipcRenderer.invoke('groups:list'),
-    create: (name: string, pinned?: boolean): Promise<any> =>
-      ipcRenderer.invoke('groups:create', name, pinned),
+    create: (name: string, pinned?: boolean, color?: string, description?: string): Promise<any> =>
+      ipcRenderer.invoke('groups:create', name, pinned, color, description),
     rename: (id: string, name: string): Promise<void> => ipcRenderer.invoke('groups:rename', id, name),
     pin: (id: string, pinned: boolean): Promise<void> => ipcRenderer.invoke('groups:pin', id, pinned),
     updateMeta: (id: string, color: string, description: string): Promise<void> =>
