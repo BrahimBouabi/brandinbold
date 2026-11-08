@@ -141,7 +141,8 @@ function webrtcBehavior(profile: Profile): string {
     case 'real': return 'Real'
     case 'disabled': return 'Disabled'
     case 'proxy-only': return 'Only Proxy'
-    default: return 'Altered' // altered + public-only
+    case 'public-only': return 'Public Only'
+    default: return 'Altered'
   }
 }
 
@@ -160,13 +161,13 @@ export function buildIncognitonCsv(
 
   for (const p of profiles) {
     const ua = uaOf(p)
-    const gpuMetaVendor = p.webglMeta === 'off' ? '' : 'WebKit'
-    const gpuMetaRenderer = p.webglMeta === 'off' ? '' : 'WebKit WebGL'
-    const gpuUnmaskedVendor = p.webglMeta === 'off' ? '' : p.webgl.vendor
+    const gpuMetaVendor = p.webglMeta === 'off' ? '' : (p.webgl.vendor || 'WebKit')
+    const gpuMetaRenderer = p.webglMeta === 'off' ? '' : (p.webgl.renderer || 'WebKit WebGL')
+    const gpuUnmaskedVendor = p.webglMeta === 'off' ? '' : (p.webgl.unmaskedVendor ?? p.webgl.vendor)
     const gpuUnmaskedRenderer = p.webglMeta === 'off' ? '' : (p.webgl.unmaskedRenderer ?? p.webgl.renderer)
     const tzName = p.timezone.name || (p.timezone.mode === 'custom' ? '' : (p.proxyLastCheck?.timezone ?? ''))
     const values: Record<string, unknown> = {
-      profile_browser_version: coreVersion(p),
+      profile_browser_version: p.userAgentMode === 'specific' && p.userAgentVersion ? p.userAgentVersion : coreVersion(p),
       profile_name: p.name,
       profile_notes: options.includeNotes ? p.notes : '',
       simulated_operating_system: p.os,
@@ -206,8 +207,8 @@ export function buildIncognitonCsv(
       Timezone_fill_timezone_based_on_ip: bool(p.timezone.mode === 'ip'),
       Geolocation_behavior: p.geoPolicy === 'allow' ? 'Allow' : p.geoPolicy === 'block' ? 'Block' : 'Prompt',
       Geolocation_fill_geolocation_based_on_ip: bool(p.geolocation.mode === 'ip'),
-      Geolocation_location_information_latitude: p.geolocation.latitude ?? '',
-      Geolocation_location_information_longitude: p.geolocation.longitude ?? '',
+      Geolocation_location_information_latitude: p.geolocation.mode === 'custom' ? (p.geolocation.latitude ?? '') : '',
+      Geolocation_location_information_longitude: p.geolocation.mode === 'custom' ? (p.geolocation.longitude ?? '') : '',
       Geolocation_location_information_accuracy: p.geolocation.accuracy ?? '',
       Fonts_enable_font_list_masking: bool(true),
       Fonts_enable_unicode_glyps_domrect: bool(p.unicode),
@@ -220,7 +221,7 @@ export function buildIncognitonCsv(
       WebRTC_public_ip: p.proxyLastCheck?.ip ?? '',
       WebRTC_local_ip: (p as any).webrtcLocalIp ?? '',
       customDNS_enabled: bool(p.dnsEnabled),
-      customDNS_details: p.dnsEnabled ? p.dnsServer : '',
+      customDNS_details: p.dnsServer ?? '',
       Other_active_session_lock: bool(p.sessionLock !== false),
       Other_other_ShowProfileName: bool(p.showNameInBrowser !== false),
       Other_browser_language_lock: bool(p.uiFollowNavigatorLanguage),

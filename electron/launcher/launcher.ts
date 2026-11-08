@@ -22,18 +22,25 @@ export class Launcher {
     this.engine = engine
   }
 
-  async launch(profile: Profile, opts?: { extraArgs?: string; openUrlAfter?: string }): Promise<LaunchResult> {
+  async launch(
+    profile: Profile,
+    opts?: { extraArgs?: string; openUrlAfter?: string; maximized?: boolean; privateWindow?: boolean }
+  ): Promise<LaunchResult> {
     if (this.registry.get(profile.id)) {
       throw new Error('Profile is already running')
     }
     this.registry.markLaunching(profile.id)
     try {
-      // per-launch options (Launch Options submenu): extra args + URL to open
-      if (opts?.extraArgs) {
+      // per-launch options (Launch Options submenu): extra args + URL to open + maximized + privateWindow
+      const extraFlags: string[] = []
+      if (opts?.extraArgs) extraFlags.push(opts.extraArgs)
+      if (opts?.privateWindow) extraFlags.push('-private-window')
+      if (extraFlags.length || opts?.maximized) {
         profile = {
           ...profile,
-          customArgsEnabled: true,
-          customArgs: [profile.customArgs, opts.extraArgs].filter(Boolean).join(' ')
+          customArgsEnabled: extraFlags.length ? true : profile.customArgsEnabled,
+          customArgs: [profile.customArgs, ...extraFlags].filter(Boolean).join(' '),
+          ...(opts?.maximized ? ({ __maximized: true } as any) : {})
         }
       }
 
@@ -77,6 +84,9 @@ export class Launcher {
       const { mkdir } = await import('fs/promises')
       await mkdir(userDataDir, { recursive: true })
       const { result, handle } = await this.engine.launch(profile, userDataDir, ipInfo)
+      if (opts?.openUrlAfter && /^https?:\/\//i.test(opts.openUrlAfter.trim())) {
+        await handle.openUrl(opts.openUrlAfter.trim()).catch(() => {})
+      }
 
       this.registry.register(result, handle)
       this.store.save({

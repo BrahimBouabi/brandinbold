@@ -91,6 +91,7 @@ export interface ImportRunResult {
   fixed: number
   warnings: number
   log: string[]
+  profiles?: Profile[]
 }
 
 interface RowMap { [header: string]: string }
@@ -119,10 +120,21 @@ function mapIncognitonRow(
   const messages: string[] = []
   let fixed = false
 
-  const osRaw = (g(m, 'simulated_operating_system') || 'macos').toLowerCase()
+  const rawName = g(m, 'profile_name', 'name').trim()
+  if (!rawName) {
+    throw new Error('Missing required profile_name')
+  }
+
+  const osRaw = (g(m, 'simulated_operating_system', 'os') || 'macos').toLowerCase()
+  if (!osRaw.includes('win') && !osRaw.includes('lin') && !osRaw.includes('mac') && !osRaw.includes('darwin')) {
+    throw new Error(`Invalid simulated_operating_system "${osRaw}" (expected windows, macos, or linux)`)
+  }
   const os: TargetOS = osRaw.includes('win') ? 'windows' : osRaw.includes('lin') ? 'linux' : 'macos'
   const ua = g(m, 'Navigator_user_agent')
   const platformInFile = g(m, 'Navigator_platform')
+  const bbId = g(m, 'brandinbold_id')
+  const isBrandinboldExport = !!bbId
+  const isChromeUa = /Chrome\/\d+/i.test(ua) && !/Firefox\/\d+/i.test(ua)
 
   // consistency: platform must match the OS
   const expectedPlatform = PLATFORM_BY_OS[os]
@@ -133,7 +145,9 @@ function mapIncognitonRow(
   }
   // consistency: Incogniton UA is a Chrome UA — our engine presents its own
   // (Firefox) identity; the pinned fingerprint is regenerated at launch.
-  if (ua && fixAutomatically) {
+  // If the UA is already a Firefox/Camoufox UA (or Brandinbold export), keep it!
+  const replaceUa = fixAutomatically && !!ua && isChromeUa && !isBrandinboldExport
+  if (replaceUa) {
     messages.push('UA from file replaced by the engine-drawn identity (Camoufox)')
     fixed = true
   }
@@ -141,16 +155,22 @@ function mapIncognitonRow(
   // timezone/geo without proxy: align to IP
   const tzName = g(m, 'Timezone_timezone_name')
   const tzFill = bool(g(m, 'Timezone_fill_timezone_based_on_ip'))
-  const geoLat = parseFloat(g(m, 'Geolocation_location_information_latitude'))
-  const hasGeo = Number.isFinite(geoLat)
-  const proxyType = (g(m, 'proxy_connection_type') || 'none').toLowerCase()
+  const geoLatRaw = g(m, 'Geolocation_location_information_latitude')
+  const geoLonRaw = g(m, 'Geolocation_location_information_longitude')
+  const geoLat = parseFloat(geoLatRaw)
+  const geoLon = parseFloat(geoLonRaw)
+  const hasGeo = geoLatRaw !== '' && Number.isFinite(geoLat) && (geoLat !== 0 || (Number.isFinite(geoLon) && geoLon !== 0))
+  const proxyType = (g(m, 'proxy_connection_type', 'proxy_type') || 'none').toLowerCase()
   const hasProxy = proxyType !== '' && proxyType !== 'none'
+  if (hasProxy && !['http', 'https', 'socks4', 'socks5'].includes(proxyType)) {
+    throw new Error(`Unsupported proxy_connection_type "${proxyType}"`)
+  }
   let timezoneMode: 'off' | 'ip' | 'custom' = tzName ? 'custom' : 'off'
   if (tzFill) timezoneMode = 'ip'
   let geoMode: 'off' | 'ip' | 'custom' = hasGeo ? 'custom' : 'off'
   const geoFill = bool(g(m, 'Geolocation_fill_geolocation_based_on_ip'))
   if (geoFill) geoMode = 'ip'
-  if (fixAutomatically && !hasProxy && (timezoneMode === 'custom' || geoMode === 'custom')) {
+  if (fixAutomatically && !isBrandinboldExport && !hasProxy && (timezoneMode === 'custom' || geoMode === 'custom')) {
     timezoneMode = 'ip'
     geoMode = 'ip'
     messages.push(`timezone/geo (${tzName || 'custom'}) aligned to IP — no proxy set`)
@@ -163,20 +183,29 @@ function mapIncognitonRow(
     .filter(Boolean)
 
   const proxyUrl = g(m, 'proxy_proxy_url')
-  let host = ''
-  let port = 0
+  let host = g(m, 'proxy_host')
+  let port = parseInt(g(m, 'proxy_port'), 10) || 0
   if (proxyUrl) {
     const parts = proxyUrl.split(':')
-    host = parts[0] ?? ''
-    port = parseInt(parts[1], 10) || 0
-    // url:port:user:pass
-    if (!hasProxy && parts.length >= 2) { /* noop */ }
+    host = parts[0]?.trim() ?? ''
+    port = parseInt(parts[1] ?? '', 10) || 0
+  }
+  if (hasProxy && (!host || port <= 0 || port > 65535)) {
+    throw new Error(`Invalid proxy endpoint "${proxyUrl || `${host}:${port}`}" (expected host:port)`)
   }
 
   const canvas = (g(m, 'Hardware_Canvas_behavior') || 'Off').toLowerCase()
   const audio = (g(m, 'Hardware_AudioContext_behavior') || 'Off').toLowerCase()
   const webrtcRaw = g(m, 'WebRTC_behavior').toLowerCase()
-  const webrtc = webrtcRaw.includes('real') ? 'real' : webrtcRaw.includes('disabl') ? 'disabled' : webrtcRaw.includes('only') ? 'proxy-only' : 'altered'
+  const webrtc = webrtcRaw.includes('real')
+    ? 'real'
+    : webrtcRaw.includes('disabl')
+      ? 'disabled'
+      : webrtcRaw.includes('only proxy') || webrtcRaw === 'proxy-only'
+        ? 'proxy-only'
+        : webrtcRaw.includes('public')
+          ? 'public-only'
+          : 'altered'
   const webglMeta = (g(m, 'Hardware_WebGL_meta_behavior') || 'Mask').toLowerCase() === 'off' ? 'off' : 'mask'
 
   const startupUrls = g(m, 'Other_startup_urls_string')
@@ -199,18 +228,56 @@ function mapIncognitonRow(
   }
 
   const now = new Date().toISOString()
-  const groupName = g(m, 'profile_group')
+  const groupName = g(m, 'profile_group', 'group')
   const browserLanguage = g(m, 'Other_custom_browser_language')
   const proxyProvider = g(m, 'Proxy_proxy_provider')
   const freeProxyCountry = g(m, 'unblocked_free_proxy_country')
   const webrtcLocalIp = g(m, 'WebRTC_local_ip')
+
+  const bbTagsRaw = g(m, 'brandinbold_tags', 'tags')
+  const tags = bbTagsRaw ? bbTagsRaw.split('|').map((s) => s.trim()).filter(Boolean) : []
+  const bbColor = g(m, 'brandinbold_color') || '#8952ef'
+  const bbExtRaw = g(m, 'brandinbold_extensions')
+  const extensions = bbExtRaw
+    ? bbExtRaw
+        .split('|')
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((p) => ({
+          name: p.split('/').filter(Boolean).pop() ?? 'extension',
+          path: p,
+          type: 'custom' as const
+        }))
+    : []
+
+  const uaLatestRaw = g(m, 'Navigator_useragent_always_latest')
+  const uaMatch = bool(g(m, 'Navigator_useragent_match_chrome_core'))
+  const browserVerRaw = g(m, 'profile_browser_version')
+  const userAgentMode: Profile['userAgentMode'] = uaMatch
+    ? 'match'
+    : uaLatestRaw !== '' && !bool(uaLatestRaw)
+      ? 'specific'
+      : 'latest'
+  const userAgentVersion = userAgentMode === 'specific' ? browserVerRaw : ''
+
+  const metaVendor = g(m, 'Hardware_WebGL_meta_vendor')
+  const metaRenderer = g(m, 'Hardware_WebGL_meta_renderer')
+  const unmaskedVendor = g(m, 'Hardware_WebGL_meta_unmasked_vendor')
+  const unmaskedRenderer = g(m, 'Hardware_WebGL_meta_unmasked_renderer')
+
+  const hwRaw = g(m, 'Navigator_hardware_concurrency')
+  const hwParsed = parseInt(hwRaw, 10)
+  const hwConcurrency = Number.isFinite(hwParsed) && hwParsed > 0 ? hwParsed : 8
+  const memParsed = parseInt(g(m, 'Navigator_device_memory'), 10)
+  const devMemory = Number.isFinite(memParsed) && memParsed > 0 ? memParsed : 8
+
   const profile: Profile = {
-    id: randomUUID(),
-    name: g(m, 'profile_name') || 'Imported profile',
-    notes: g(m, 'profile_notes'),
-    tags: [],
+    id: bbId || randomUUID(),
+    name: rawName,
+    notes: g(m, 'profile_notes', 'notes'),
+    tags,
     os,
-    color: '#8952ef',
+    color: bbColor,
     groupId: null,
     proxyId: null,
     proxy: {
@@ -224,20 +291,26 @@ function mapIncognitonRow(
     pinned: false,
     disabled: false,
     navigator: {
-      userAgent: fixAutomatically ? '' : ua,
+      userAgent: replaceUa ? '' : ua,
       platform,
       languages: languages.length ? languages : ['en-US', 'en'],
-      hardwareConcurrency: parseInt(g(m, 'Navigator_hardware_concurrency'), 10) || 8,
-      deviceMemory: parseInt(g(m, 'Navigator_device_memory'), 10) || 8
+      hardwareConcurrency: hwConcurrency,
+      deviceMemory: devMemory
     },
     screen: (() => {
       const res = g(m, 'Navigator_custom_screen_resolution')
+      if (!res) return { width: 1920, height: 1080 }
       const [w, h] = res.split('x').map(Number)
-      return w && h ? { width: w, height: h } : { width: 1920, height: 1080 }
+      if (!w || !h || w < 320 || h < 240) {
+        throw new Error(`Invalid screen resolution "${res}"`)
+      }
+      return { width: w, height: h }
     })(),
     webgl: {
-      vendor: g(m, 'Hardware_WebGL_meta_unmasked_vendor') || '',
-      renderer: g(m, 'Hardware_WebGL_meta_unmasked_renderer') || ''
+      vendor: unmaskedVendor || metaVendor || '',
+      renderer: (metaRenderer && metaRenderer !== 'WebKit WebGL' ? metaRenderer : unmaskedRenderer || metaRenderer) || '',
+      ...(unmaskedVendor ? { unmaskedVendor } : {}),
+      ...(unmaskedRenderer ? { unmaskedRenderer } : {})
     },
     canvas: canvas === 'noise' ? 'noise' : 'off',
     canvasBlock: canvas === 'block',
@@ -246,7 +319,7 @@ function mapIncognitonRow(
     geolocation: {
       mode: geoMode,
       latitude: hasGeo ? geoLat : 0,
-      longitude: parseFloat(g(m, 'Geolocation_location_information_longitude')) || 0,
+      longitude: hasGeo && Number.isFinite(geoLon) ? geoLon : 0,
       accuracy: parseFloat(g(m, 'Geolocation_location_information_accuracy')) || 100
     },
     geoPolicy: (() => {
@@ -262,18 +335,18 @@ function mapIncognitonRow(
       audioInputs: parseInt(g(m, 'Media_devices_audio_inputs'), 10) || 1,
       audioOutputs: parseInt(g(m, 'Media_devices_audio_outputs'), 10) || 1
     },
-    mediaMask: bool(g(m, 'Media_devices_enable_media_masking')),
+    mediaMask: g(m, 'Media_devices_enable_media_masking') === '' ? true : bool(g(m, 'Media_devices_enable_media_masking')),
     fonts: { mode: 'default', list: [] },
     unicode: bool(g(m, 'Fonts_enable_unicode_glyps_domrect')),
-    userAgentMode: 'latest',
-    userAgentVersion: '',
+    userAgentMode,
+    userAgentVersion,
     dnsEnabled,
     dnsServer: g(m, 'customDNS_details'),
     doNotTrack: bool(g(m, 'Navigator_do_not_track')),
-    hardwareConcurrencyOverride: parseInt(g(m, 'Navigator_hardware_concurrency'), 10) || null,
-    deviceMemory: parseInt(g(m, 'Navigator_device_memory'), 10) || 8,
-    sessionLock: bool(g(m, 'Other_active_session_lock')),
-    showNameInBrowser: bool(g(m, 'Other_other_ShowProfileName')),
+    hardwareConcurrencyOverride: Number.isFinite(hwParsed) && hwParsed > 0 ? hwParsed : null,
+    deviceMemory: devMemory,
+    sessionLock: g(m, 'Other_active_session_lock') === '' ? true : bool(g(m, 'Other_active_session_lock')),
+    showNameInBrowser: g(m, 'Other_other_ShowProfileName') === '' ? true : bool(g(m, 'Other_other_ShowProfileName')),
     uiFollowNavigatorLanguage: bool(g(m, 'Other_browser_language_lock')),
     customArgsEnabled: bool(g(m, 'Other_custom_browser_args_enabled')),
     customArgs: g(m, 'Other_custom_browser_args_string'),
@@ -282,13 +355,13 @@ function mapIncognitonRow(
     iphey: bool(g(m, 'other_try_to_pass_iphey')),
     hideBrowserSettings: bool(g(m, 'other_doNotShowChromeSettings')),
     webcam: bool(g(m, 'browser_allowRealMediaDevices')),
-    fillLanguageFromIp: bool(g(m, 'Navigator_navigator_languageIPToggle')),
+    fillLanguageFromIp: g(m, 'Navigator_navigator_languageIPToggle') === '' ? true : bool(g(m, 'Navigator_navigator_languageIPToggle')),
     freeProxy: bool(g(m, 'unblocked_free_proxy_enabled')),
-    extensions: [],
+    extensions,
     pendingCookies: null,
     fingerprint: null, // regenerated for OUR engine at first launch
     lastLaunchedAt: null,
-    browserVersion: null,
+    browserVersion: browserVerRaw || null,
     createdAt: now,
     updatedAt: now,
     startup: { homepage: '', restoreSession: undefined, clearSession: false },
@@ -351,9 +424,10 @@ export interface ImportOptions {
   targetGroupId: string | null
   existingNames: string[]
   existingIds: string[]
+  maxQuotaRemaining?: number | null
 }
 
-export function previewImport(text: string): ImportPreview {
+export function previewImport(text: string, fixAutomatically = true): ImportPreview {
   const format = detectFormat(text)
   if (format === 'unknown') {
     return { format, delimiter: '', rowCount: 0, rows: [], unmappedColumns: [] }
@@ -368,6 +442,9 @@ export function previewImport(text: string): ImportPreview {
   }
   const delim = detectDelimiter(text)
   const parsed = parseCsv(text, delim)
+  if (!parsed.length) {
+    return { format: 'unknown', delimiter: delim, rowCount: 0, rows: [], unmappedColumns: [] }
+  }
   const header = parsed[0].map((h) => h.trim())
   const known = new Set([
     'profile_browser_version', 'profile_name', 'profile_notes', 'simulated_operating_system',
@@ -392,7 +469,9 @@ export function previewImport(text: string): ImportPreview {
     'other_custom_browser_args_enabled', 'other_custom_browser_args_string',
     'other_startup_urls_enabled', 'other_startup_urls_string', 'other_try_to_pass_iphey',
     'browser_allowrealmediadevices', 'other_donotshowchromesettings', 'unblocked_free_proxy_enabled',
-    'unblocked_free_proxy_country'
+    'unblocked_free_proxy_country',
+    'brandinbold_id', 'brandinbold_tags', 'brandinbold_extensions', 'brandinbold_color',
+    'id', 'name', 'os', 'notes', 'proxy_type', 'proxy_host', 'proxy_port', 'tags', 'group'
   ])
   const unmappedColumns = header.filter((h) => h && !known.has(h.toLowerCase()))
 
@@ -400,11 +479,11 @@ export function previewImport(text: string): ImportPreview {
   for (let i = 1; i < parsed.length; i++) {
     const m = rowToMap(header, parsed[i])
     try {
-      const { profile, messages, fixed } = mapIncognitonRow(m, unmappedColumns, true)
+      const { profile, messages } = mapIncognitonRow(m, unmappedColumns, fixAutomatically)
       const status: ImportRowResult['status'] = messages.length ? 'warning' : 'ok'
       rows.push({ name: profile.name, os: profile.os, proxy: profile.proxy.type, status, messages, profile })
     } catch (e: any) {
-      rows.push({ name: m['profile_name'] ?? '?', os: m['simulated_operating_system'] ?? '?', proxy: '?', status: 'error', messages: [e.message], profile: null })
+      rows.push({ name: m['profile_name'] || m['name'] || `Row ${i}`, os: m['simulated_operating_system'] || m['os'] || '?', proxy: '?', status: 'error', messages: [e.message], profile: null })
     }
   }
   return { format: 'incogniton', delimiter: delim, rowCount: rows.length, rows, unmappedColumns }
@@ -414,8 +493,11 @@ export function runImport(
   text: string,
   options: ImportOptions
 ): ImportRunResult {
-  const preview = previewImport(text)
+  const preview = previewImport(text, options.fixAutomatically)
   const log: string[] = []
+  const profiles: Profile[] = []
+  const seenNames = new Set(options.existingNames)
+  const seenIds = new Set(options.existingIds)
   let imported = 0
   let skipped = 0
   let fixedCount = 0
@@ -426,7 +508,12 @@ export function runImport(
       log.push(`ERROR ${row.name}: ${row.messages.join('; ')}`)
       continue
     }
-    const dupName = options.existingNames.includes(row.profile.name)
+    if (options.maxQuotaRemaining != null && imported >= options.maxQuotaRemaining) {
+      skipped++
+      log.push(`SKIPPED ${row.name}: plan limit reached`)
+      continue
+    }
+    const dupName = seenNames.has(row.profile.name)
     if (dupName && options.duplicateMode === 'skip') {
       skipped++
       log.push(`SKIPPED ${row.name}: duplicate name`)
@@ -435,6 +522,11 @@ export function runImport(
     if (dupName && options.duplicateMode === 'rename') {
       row.profile.name = `${row.profile.name} (imported)`
     }
+    if (seenIds.has(row.profile.id)) {
+      row.profile.id = randomUUID()
+    }
+    seenNames.add(row.profile.name)
+    seenIds.add(row.profile.id)
     if (row.messages.length) {
       fixedCount++
       log.push(`FIXED ${row.profile.name}: ${row.messages.join('; ')}`)
@@ -443,8 +535,8 @@ export function runImport(
     if (options.targetGroupId) row.profile.groupId = options.targetGroupId
     log.push(`IMPORTED ${row.profile.name} (${row.profile.os})`)
     imported++
-    // the caller persists via store.save; we hand back the profile list
+    profiles.push(row.profile)
     ;(row as any)._profile = row.profile
   }
-  return { imported, skipped, fixed: fixedCount, warnings: warningCount, log }
+  return { imported, skipped, fixed: fixedCount, warnings: warningCount, log, profiles }
 }

@@ -42,11 +42,23 @@ export function ImportModal({ open, onClose, onImported }: { open: boolean; onCl
     setText(content)
     setReport(null)
     try {
-      const pv = await rea.profiles.importPreview(content)
+      const pv = await rea.profiles.importPreview(content, fixAutomatically)
       setPreview(pv)
       if (pv.format === 'unknown') message.error('Format not recognized')
     } catch (e: any) {
       message.error(e.message)
+    }
+  }
+
+  const onToggleFix = async (val: boolean) => {
+    setFixAutomatically(val)
+    if (text) {
+      try {
+        const pv = await rea.profiles.importPreview(text, val)
+        setPreview(pv)
+      } catch {
+        /* ignore */
+      }
     }
   }
 
@@ -131,7 +143,7 @@ export function ImportModal({ open, onClose, onImported }: { open: boolean; onCl
             <>
               <Table
                 size="small"
-                rowKey={(r) => r.name + r.os}
+                rowKey={(_r, i) => String(i)}
                 pagination={{ pageSize: 6 }}
                 dataSource={preview.rows}
                 columns={[
@@ -146,8 +158,12 @@ export function ImportModal({ open, onClose, onImported }: { open: boolean; onCl
                   { title: 'OS', dataIndex: 'os', width: 90 },
                   { title: 'Proxy', dataIndex: 'proxy', width: 90 },
                   {
-                    title: 'Notes', dataIndex: 'messages', render: (msgs: string[]) =>
-                      msgs.length ? <Typography.Text type="warning" style={{ fontSize: 12 }}>{msgs.join(' · ')}</Typography.Text> : '—'
+                    title: 'Notes', dataIndex: 'messages', render: (msgs: string[], r: any) =>
+                      msgs.length ? (
+                        <Typography.Text type={r.status === 'error' ? 'danger' : 'warning'} style={{ fontSize: 12 }}>
+                          {msgs.join(' · ')}
+                        </Typography.Text>
+                      ) : '—'
                   }
                 ]}
               />
@@ -160,7 +176,7 @@ export function ImportModal({ open, onClose, onImported }: { open: boolean; onCl
                 <Typography.Text strong>Inconsistent data</Typography.Text>
                 <Radio.Group
                   value={fixAutomatically}
-                  onChange={(e) => setFixAutomatically(e.target.value)}
+                  onChange={(e) => void onToggleFix(e.target.value)}
                   style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 }}
                 >
                   <Radio value={true}>

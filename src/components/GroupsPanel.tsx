@@ -214,6 +214,7 @@ export function BulkActionBar({
 }) {
   const { t } = useTranslation()
   const { groups, refresh } = useApp()
+  const [bulkPrompt, setBulkPrompt] = useState<{ mode: 'tags' | 'launch' | 'edit'; value: string } | null>(null)
   if (!selected.length) return null
   const iconBtn = (icon: React.ReactNode, title: string, onClick: () => void, danger = false) => (
     <Button
@@ -361,14 +362,10 @@ export function BulkActionBar({
             } else if (key === 'browser') {
               message.info(t('nav.browserAssets'))
             } else if (key === 'proxy') {
-              message.info(t('bulk.assignProxy'))
+              await bulkProxyCheck()
             } else if (key === 'tags') {
-              const tag = window.prompt(t('profiles.tags'))
-              if (tag) {
-                for (const p of targets) {
-                  if (!p.tags.includes(tag)) await rea.profiles.save({ ...p, tags: [...p.tags, tag] })
-                }
-              }
+              setBulkPrompt({ mode: 'tags', value: '' })
+              return
             } else if (key === 'pin') {
               const anyUnpinned = targets.some((p: any) => !p.pinned)
               for (const p of targets) await rea.profiles.save({ ...p, pinned: anyUnpinned })
@@ -376,11 +373,11 @@ export function BulkActionBar({
               const anyEnabled = targets.some((p: any) => !p.disabled)
               for (const p of targets) await rea.profiles.save({ ...p, disabled: anyEnabled })
             } else if (key === 'launch') {
-              const hp = window.prompt(t('newProfile.screen'), 'https://example.com')
-              if (hp) for (const p of targets) await rea.profiles.save({ ...p, startup: { ...p.startup, homepage: hp } })
+              setBulkPrompt({ mode: 'launch', value: 'https://example.com' })
+              return
             } else if (key === 'edit') {
-              const tag = window.prompt(t('profiles.notes'))
-              if (tag != null) for (const p of targets) await rea.profiles.save({ ...p, notes: tag })
+              setBulkPrompt({ mode: 'edit', value: '' })
+              return
             }
             await refresh.profiles()
           }
@@ -402,6 +399,55 @@ export function BulkActionBar({
       >
         <Button type="text" style={{ color: '#fff' }} icon={<SearchOutlined />} title={t('bulk.selected', { n: selected.length })} />
       </Popover>
+
+      <Modal
+        open={!!bulkPrompt}
+        title={
+          bulkPrompt?.mode === 'tags'
+            ? t('bulk.manageTags')
+            : bulkPrompt?.mode === 'launch'
+              ? t('bulk.launchOptions')
+              : t('bulk.editSettings')
+        }
+        onCancel={() => setBulkPrompt(null)}
+        onOk={async () => {
+          if (!bulkPrompt) return
+          const list = await rea.profiles.list()
+          const targets = list.filter((p: any) => selected.includes(p.id))
+          if (bulkPrompt.mode === 'tags' && bulkPrompt.value.trim()) {
+            const newTags = bulkPrompt.value
+              .split(',')
+              .map((s) => s.trim())
+              .filter(Boolean)
+            for (const p of targets) {
+              const merged = [...new Set([...(p.tags ?? []), ...newTags])]
+              await rea.profiles.save({ ...p, tags: merged })
+            }
+          } else if (bulkPrompt.mode === 'launch' && bulkPrompt.value.trim()) {
+            for (const p of targets) {
+              await rea.profiles.save({ ...p, startup: { ...p.startup, homepage: bulkPrompt.value.trim() } })
+            }
+          } else if (bulkPrompt.mode === 'edit') {
+            for (const p of targets) {
+              await rea.profiles.save({ ...p, notes: bulkPrompt.value })
+            }
+          }
+          setBulkPrompt(null)
+          await refresh.profiles()
+        }}
+      >
+        <Input
+          value={bulkPrompt?.value ?? ''}
+          onChange={(e) => bulkPrompt && setBulkPrompt({ ...bulkPrompt, value: e.target.value })}
+          placeholder={
+            bulkPrompt?.mode === 'tags'
+              ? 'tag1, tag2'
+              : bulkPrompt?.mode === 'launch'
+                ? 'https://example.com'
+                : t('profiles.notes')
+          }
+        />
+      </Modal>
     </div>
   )
 }

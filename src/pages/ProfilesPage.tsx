@@ -30,6 +30,7 @@ import { NewProfileModal } from '../components/NewProfileModal'
 import { EditProxyModal } from '../components/EditProxyModal'
 import { ExportModal } from '../components/ExportModal'
 import { ImportModal } from '../components/ImportModal'
+import { BulkCreateModal } from '../components/BulkCreateModal'
 import { GroupsPanel, BulkActionBar } from '../components/GroupsPanel'
 import { BrandLogo } from '../components/Logo'
 import { ENABLE_PLAN_LIMITS } from '../../shared/config'
@@ -55,12 +56,25 @@ export function ProfilesPage() {
     'name', 'proxy', 'group', 'tags', 'status', 'browserVersion', 'lastEdited', 'actions'
   ])
   const [creating, setCreating] = useState(false)
+  const [bulkCreating, setBulkCreating] = useState(false)
   const [proxyFor, setProxyFor] = useState<Profile | null>(null)
   const [editingProfile, setEditingProfile] = useState<Profile | null>(null)
   const [editTab, setEditTab] = useState<any>(undefined)
   const [exportIds, setExportIds] = useState<string[] | null>(null)
   const [importing, setImporting] = useState(false)
   const [notes, setNotes] = useState<Record<string, string>>({})
+  const [actionModal, setActionModal] = useState<{
+    mode: 'tags' | 'lo-args' | 'lo-url' | 'bm-addbm' | 'bm-urls'
+    profile: Profile
+    value: string
+    enabled?: boolean
+  } | null>(null)
+  const [syncModal, setSyncModal] = useState<{
+    mainProfile: Profile
+    followerIds: string[]
+    initialUrl: string
+    busy?: boolean
+  } | null>(null)
   const qs = new URLSearchParams(window.location.search)
   useEffect(() => {
     if (qs.get('modal') === 'proxy' && profiles.length) setProxyFor(profiles[0])
@@ -70,6 +84,7 @@ export function ProfilesPage() {
   useEffect(() => {
     if (qs.get('bulk') === '1') setSelected(['preview-1', 'preview-2', 'preview-3'])
     if (qs.get('modal') === 'new') setCreating(true)
+    if (qs.get('modal') === 'bulk') setBulkCreating(true)
     if (qs.get('modal') === 'import') setImporting(true)
     const onExportAll = () => {
       const ids = profiles.map((p) => p.id)
@@ -107,7 +122,10 @@ export function ProfilesPage() {
     return list.map((p) => ({ ...p, status: statuses[p.id] ?? 'ready', key: p.id }))
   }, [profiles, tab, search, statuses, groups])
 
-  const launch = async (id: string, opts?: { extraArgs?: string; openUrlAfter?: string; maximized?: boolean }) => {
+  const launch = async (
+    id: string,
+    opts?: { extraArgs?: string; openUrlAfter?: string; maximized?: boolean; privateWindow?: boolean }
+  ) => {
     try {
       await rea.launch(id, opts)
     } catch (e: any) {
@@ -253,7 +271,12 @@ export function ProfilesPage() {
       key: 'tags',
       render: (_: any, p: Profile) =>
         p.tags.length ? (
-          <Space size={4} wrap>
+          <Space
+            size={4}
+            wrap
+            style={{ cursor: 'pointer' }}
+            onClick={() => setActionModal({ mode: 'tags', profile: p, value: (p.tags ?? []).join(', ') })}
+          >
             {p.tags.map((tg: string) => (
               <Tag key={tg} color="gold" style={{ borderRadius: 6 }}>{tg}</Tag>
             ))}
@@ -261,15 +284,7 @@ export function ProfilesPage() {
         ) : (
           <a
             style={{ opacity: 0.7 }}
-            onClick={async () => {
-              const tg = window.prompt(t('profiles.addTag'))
-              if (tg?.trim()) {
-                const list = await rea.profiles.list()
-                const cur = list.find((x: any) => x.id === p.id)
-                if (cur) await rea.profiles.save({ ...cur, tags: [...cur.tags, tg.trim()] })
-                await refresh.profiles()
-              }
-            }}
+            onClick={() => setActionModal({ mode: 'tags', profile: p, value: '' })}
           >
             {t('profiles.addTag')}
           </a>
@@ -389,18 +404,18 @@ export function ProfilesPage() {
           <Dropdown
             menu={{
               items: [
-                { key: 'single', label: t('profiles.newProfile') },
-                { key: 'bulk', label: t('profiles.bulkCreate') },
+                { key: 'single', label: t('profiles.newProfile'), disabled: atQuota },
+                { key: 'bulk', label: t('profiles.bulkCreate'), disabled: atQuota },
                 { key: 'import', label: t('profiles.import') }
               ],
               onClick: ({ key }) => {
                 if (key === 'single') setCreating(true)
-                else if (key === 'bulk') void bulkCreate()
-                else message.info(t('profiles.import') + ' — CSV/JSON (soon)')
+                else if (key === 'bulk') setBulkCreating(true)
+                else if (key === 'import') setImporting(true)
               }
             }}
           >
-            <Button type="primary" disabled={atQuota}>
+            <Button type="primary">
               {t('profiles.newProfile')} <DownOutlined />
             </Button>
           </Dropdown>
@@ -556,6 +571,223 @@ export function ProfilesPage() {
           }}
         />
       )}
+      <BulkCreateModal
+        open={bulkCreating}
+        onClose={() => setBulkCreating(false)}
+        onCreated={async () => {
+          await refresh.profiles()
+        }}
+      />
+
+      <Modal
+        open={!!actionModal}
+        title={
+          actionModal?.mode === 'tags'
+            ? `Manage tags — ${actionModal.profile.name}`
+            : actionModal?.mode === 'lo-args'
+              ? `Start with custom arguments — ${actionModal.profile.name}`
+              : actionModal?.mode === 'lo-url'
+                ? `Start with a specific URL — ${actionModal.profile.name}`
+                : actionModal?.mode === 'bm-addbm'
+                  ? `Add Bookmarks — ${actionModal.profile.name}`
+                  : `Edit Startup URLs — ${actionModal?.profile.name ?? ''}`
+        }
+        onCancel={() => setActionModal(null)}
+        onOk={async () => {
+          if (!actionModal) return
+          const { mode, profile: target, value, enabled } = actionModal
+          if (mode === 'tags') {
+            const list = await rea.profiles.list()
+            const cur = list.find((x: any) => x.id === target.id)
+            if (cur) {
+              const nextTags = value
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean)
+              await rea.profiles.save({ ...cur, tags: nextTags })
+              message.success('Tags saved')
+            }
+            setActionModal(null)
+            await refresh.profiles()
+          } else if (mode === 'lo-args') {
+            const args = value.trim()
+            setActionModal(null)
+            await launch(target.id, args ? { extraArgs: args } : undefined)
+          } else if (mode === 'lo-url') {
+            const url = value.trim()
+            if (!/^https?:\/\//i.test(url)) {
+              message.warning('Please enter a valid http:// or https:// URL')
+              return
+            }
+            setActionModal(null)
+            await launch(target.id, { openUrlAfter: url })
+          } else if (mode === 'bm-addbm') {
+            const urls = value
+              .split('\n')
+              .map((s) => s.trim())
+              .filter((s) => /^https?:\/\//i.test(s))
+            if (!urls.length) {
+              message.warning('Enter at least one valid http:// or https:// URL')
+              return
+            }
+            const n = await rea.bookmarks.add(target.id, urls).catch((e: Error) => {
+              message.warning(e.message)
+              return 0
+            })
+            if (n) message.success(`${n} bookmark${n === 1 ? '' : 's'} added`)
+            setActionModal(null)
+          } else if (mode === 'bm-urls') {
+            const urls = value
+              .split('\n')
+              .map((s) => s.trim())
+              .filter(Boolean)
+            const list = await rea.profiles.list()
+            const cur = list.find((x: any) => x.id === target.id)
+            if (cur) {
+              await rea.profiles.save({
+                ...cur,
+                startupUrls: urls,
+                startupUrlsEnabled: enabled ?? urls.length > 0
+              })
+              message.success('Startup URLs saved')
+            }
+            setActionModal(null)
+            await refresh.profiles()
+          }
+        }}
+      >
+        {actionModal?.mode === 'bm-addbm' || actionModal?.mode === 'bm-urls' ? (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {actionModal.mode === 'bm-urls' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <Switch
+                  size="small"
+                  checked={actionModal.enabled ?? true}
+                  onChange={(v) => setActionModal({ ...actionModal, enabled: v })}
+                />
+                <span style={{ fontSize: 13 }}>Open these URLs automatically at profile startup</span>
+              </div>
+            )}
+            <Input.TextArea
+              rows={4}
+              value={actionModal.value}
+              onChange={(e) => setActionModal({ ...actionModal, value: e.target.value })}
+              placeholder="https://example.com&#10;https://wikipedia.org"
+            />
+          </div>
+        ) : (
+          <Input
+            value={actionModal?.value ?? ''}
+            onChange={(e) => actionModal && setActionModal({ ...actionModal, value: e.target.value })}
+            placeholder={
+              actionModal?.mode === 'tags'
+                ? 'tag1, tag2, tag3'
+                : actionModal?.mode === 'lo-args'
+                  ? '--private-window'
+                  : 'https://example.com'
+            }
+          />
+        )}
+      </Modal>
+
+      <Modal
+        open={!!syncModal}
+        title={syncModal ? `Synchronizer — Main: ${syncModal.mainProfile.name}` : 'Synchronizer'}
+        onCancel={() => setSyncModal(null)}
+        footer={
+          <Space>
+            <Button
+              danger
+              onClick={async () => {
+                await rea.sync.stop()
+                message.info('Synchronizer stopped')
+                setSyncModal(null)
+              }}
+            >
+              Stop Synchronizer
+            </Button>
+            <Button onClick={() => setSyncModal(null)}>Cancel</Button>
+            <Button
+              type="primary"
+              loading={syncModal?.busy}
+              onClick={async () => {
+                if (!syncModal) return
+                setSyncModal({ ...syncModal, busy: true })
+                try {
+                  await rea.sync.start({
+                    mainId: syncModal.mainProfile.id,
+                    followerIds: syncModal.followerIds,
+                    initialUrl: syncModal.initialUrl.trim() || undefined
+                  })
+                  message.success(
+                    `Synchronizer started (${syncModal.mainProfile.name} + ${syncModal.followerIds.length} follower${syncModal.followerIds.length === 1 ? '' : 's'})`
+                  )
+                  await refresh.profiles()
+                  setSyncModal(null)
+                } catch (e: any) {
+                  message.error(e.message)
+                  setSyncModal((cur) => (cur ? { ...cur, busy: false } : null))
+                }
+              }}
+            >
+              Start Synchronizer
+            </Button>
+          </Space>
+        }
+      >
+        {syncModal && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>
+              Select follower profiles to synchronize with <b>{syncModal.mainProfile.name}</b>. Navigating to any URL in
+              the main profile will mirror the navigation across all selected follower browsers.
+            </Typography.Text>
+            <div>
+              <Typography.Text strong style={{ fontSize: 12.5, display: 'block', marginBottom: 6 }}>
+                Follower profiles
+              </Typography.Text>
+              <div style={{ maxHeight: 180, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {profiles
+                  .filter((x) => x.id !== syncModal.mainProfile.id && !x.disabled)
+                  .map((fp) => {
+                    const checked = syncModal.followerIds.includes(fp.id)
+                    return (
+                      <label
+                        key={fp.id}
+                        style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 13 }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            const next = e.target.checked
+                              ? [...syncModal.followerIds, fp.id]
+                              : syncModal.followerIds.filter((id) => id !== fp.id)
+                            setSyncModal({ ...syncModal, followerIds: next })
+                          }}
+                        />
+                        <span style={{ width: 8, height: 8, borderRadius: 4, background: fp.color ?? '#8952ef' }} />
+                        <span>{fp.name}</span>
+                        <Tag style={{ marginLeft: 'auto', borderRadius: 6, fontSize: 11 }}>
+                          {statuses[fp.id] === 'launched' ? 'Launched' : 'Ready'}
+                        </Tag>
+                      </label>
+                    )
+                  })}
+              </div>
+            </div>
+            <div>
+              <Typography.Text strong style={{ fontSize: 12.5, display: 'block', marginBottom: 4 }}>
+                Initial URL to open across all synced browsers (optional)
+              </Typography.Text>
+              <Input
+                value={syncModal.initialUrl}
+                onChange={(e) => setSyncModal({ ...syncModal, initialUrl: e.target.value })}
+                placeholder="https://example.com"
+              />
+            </div>
+          </div>
+        )}
+      </Modal>
 
       <BulkActionBar
         selected={selected as string[]}
@@ -606,11 +838,11 @@ export function ProfilesPage() {
   )
 
   function rowMenu(p: any) {
-    const launched = p.status === 'launched'
+    const launched = p.status === 'launched' || p.status === 'launching'
     return {
       items: [
-        { key: 'edit', label: 'Edit' },
-        { key: 'sync', label: 'Start Synchronizer (As Main)' },
+        { key: 'edit', label: 'Edit', disabled: launched },
+        { key: 'sync', label: 'Start Synchronizer (As Main)', disabled: !!p.disabled },
         {
           key: 'movegroup',
           label: 'Move to Group',
@@ -625,47 +857,51 @@ export function ProfilesPage() {
         { key: 'pin', label: p.pinned ? 'Unpin' : 'Pin to Top' },
         { key: 'tags', label: 'Manage tags' },
         { type: 'divider' as const },
-        { key: 'proxy', label: 'Edit Proxy' },
+        { key: 'proxy', label: 'Edit Proxy', disabled: launched },
         { type: 'divider' as const },
-        { key: 'clone', label: 'Clone Profile' },
+        { key: 'clone', label: 'Clone Profile', disabled: atQuota },
         { key: 'csv', label: 'Export to CSV' },
         ...(launched ? [{ key: 'stop', label: 'Stop Browser' }] : []),
         {
-          key: 'launchopt', label: 'Launch Options',
+          key: 'launchopt',
+          label: 'Launch Options',
+          disabled: launched || !!p.disabled,
           children: [
-            { key: 'lo-normal', label: 'Start normally' },
-            { key: 'lo-max', label: 'Start maximized' },
-            { key: 'lo-args', label: 'Start with custom arguments' },
-            { key: 'lo-url', label: 'Start with a specific URL' },
-            { key: 'lo-private', label: 'Start in a private window', disabled: true }
+            { key: 'lo-normal', label: 'Start normally', disabled: launched || !!p.disabled },
+            { key: 'lo-max', label: 'Start maximized', disabled: launched || !!p.disabled },
+            { key: 'lo-args', label: 'Start with custom arguments', disabled: launched || !!p.disabled },
+            { key: 'lo-url', label: 'Start with a specific URL', disabled: launched || !!p.disabled },
+            { key: 'lo-private', label: 'Start in a private window', disabled: launched || !!p.disabled }
           ]
         },
         {
-          key: 'browsermgmt', label: 'Browser Management',
+          key: 'browsermgmt',
+          label: 'Browser Management',
           children: [
-            { key: 'bm-import', label: 'Import Cookies' },
-            { key: 'bm-export', label: 'Export Cookies' },
-            { key: 'bm-clean', label: 'Clean cookies' },
-            { key: 'bm-collector', label: 'Start Cookie Collector' },
-            { key: 'bm-addbm', label: 'Add Bookmarks' },
-            { key: 'bm-clearbm', label: 'Clear Bookmarks' },
-            { key: 'bm-urls', label: 'Edit Startup URLs' }
+            { key: 'bm-import', label: 'Import Cookies', disabled: !launched },
+            { key: 'bm-export', label: 'Export Cookies', disabled: !launched },
+            { key: 'bm-clean', label: 'Clean cookies', disabled: !launched },
+            { key: 'bm-collector', label: 'Start Cookie Collector', disabled: launched || !!p.disabled },
+            { key: 'bm-addbm', label: 'Add Bookmarks', disabled: launched },
+            { key: 'bm-clearbm', label: 'Clear Bookmarks', disabled: launched },
+            { key: 'bm-urls', label: 'Edit Startup URLs', disabled: launched }
           ]
         },
-        { key: 'extensions', label: 'Extensions' },
+        { key: 'extensions', label: 'Extensions', disabled: launched },
         {
-          key: 'backup', label: 'Backup & Recovery',
+          key: 'backup',
+          label: 'Backup & Recovery',
           children: [
-            { key: 'bk-now', label: 'Back up now' },
-            { key: 'bk-restore', label: 'Restore from backup' },
-            { key: 'bk-export', label: 'Export profile data' },
-            { key: 'bk-import', label: 'Import profile data' },
+            { key: 'bk-now', label: 'Back up now', disabled: launched },
+            { key: 'bk-restore', label: 'Restore from backup', disabled: launched },
+            { key: 'bk-export', label: 'Export profile data', disabled: launched },
+            { key: 'bk-import', label: 'Import profile data', disabled: launched },
             { key: 'bk-folder', label: 'Open backup folder' }
           ]
         },
         { type: 'divider' as const },
-        { key: 'disable', label: p.disabled ? 'Enable profile' : 'Disable profile' },
-        { key: 'delete', label: 'Delete', danger: true }
+        { key: 'disable', label: p.disabled ? 'Enable profile' : 'Disable profile', disabled: launched },
+        { key: 'delete', label: 'Delete', danger: true, disabled: launched }
       ],
       onClick: async ({ key }: { key: string }) => {
         const reload = async () => { await refresh.profiles() }
@@ -675,100 +911,185 @@ export function ProfilesPage() {
           const cur = list.find((x: any) => x.id === p.id)
           if (cur) await rea.profiles.save({ ...cur, groupId: targetId })
           await reload()
+          await refresh.groups()
           message.success(targetId ? 'Moved to group' : 'Moved to Unassigned')
           return
         }
         switch (key) {
-          case 'edit': setEditingProfile(p); break
-          case 'sync': message.info('Synchronizer — coming soon'); break
+          case 'edit':
+            setEditTab(undefined)
+            setEditingProfile(p)
+            break
+          case 'sync': {
+            const others = profiles.filter((x) => x.id !== p.id && !x.disabled && statuses[x.id] === 'launched').map((x) => x.id)
+            setSyncModal({ mainProfile: p, followerIds: others, initialUrl: '' })
+            break
+          }
           case 'pin': {
             const list = await rea.profiles.list()
             const cur = list.find((x: any) => x.id === p.id)
             if (cur) await rea.profiles.save({ ...cur, pinned: !cur.pinned })
             await reload()
+            message.success(p.pinned ? 'Profile unpinned' : 'Pinned to top')
             break
           }
-          case 'tags': {
-            const tg = window.prompt('Manage tags (comma separated):', (p.tags ?? []).join(', '))
-            if (tg !== null) {
-              const list = await rea.profiles.list()
-              const cur = list.find((x: any) => x.id === p.id)
-              if (cur) await rea.profiles.save({ ...cur, tags: tg.split(',').map((s) => s.trim()).filter(Boolean) })
-              await reload()
-            }
+          case 'tags':
+            setActionModal({ mode: 'tags', profile: p, value: (p.tags ?? []).join(', ') })
             break
-          }
-          case 'proxy': setProxyFor(p); break
+          case 'proxy':
+            setProxyFor(p)
+            break
           case 'clone': {
-            const copy = await rea.profiles.create(`${p.name} (copy)`)
-            await rea.profiles.save({ ...p, id: copy.id, name: `${p.name} (copy)`, fingerprint: p.fingerprint, color: p.color })
-            await reload()
-            break
-          }
-          case 'csv': setExportIds([p.id]); break
-          case 'stop': await stopProfile(p.id); break
-          case 'lo-normal': await launch(p.id); break
-          case 'lo-max': await launch(p.id, { maximized: true }); break
-          case 'lo-args': {
-            const args = window.prompt('Custom browser arguments:', '')
-            if (args) await launch(p.id, { extraArgs: args })
-            break
-          }
-          case 'lo-url': {
-            const url = window.prompt('URL to open at launch:', 'https://')
-            if (url && /^https?:\/\//.test(url)) await launch(p.id, { openUrlAfter: url })
-            break
-          }
-          case 'lo-private': break
-          case 'bm-import': await rea.cookies.import(p.id).catch((e: Error) => message.warning(e.message)); break
-          case 'bm-export': await rea.cookies.export(p.id, 'json').catch((e: Error) => message.warning(e.message)); break
-          case 'bm-clean': await rea.cookies.clear(p.id).then(() => message.success('Cookies cleared')).catch((e: Error) => message.warning(e.message)); break
-          case 'bm-collector': await rea.cookies.collect(p.id).then(() => message.success('Cookie collector finished')).catch((e: Error) => message.warning(e.message)); break
-          case 'bm-addbm': {
-            const urls = window.prompt('Bookmarks to add (one URL per line):', '')
-            if (urls?.trim()) {
-              const list = urls.split('\n').map((s) => s.trim()).filter((s) => /^https?:\/\//.test(s))
-              const n = await rea.bookmarks.add(p.id, list).catch((e: Error) => { message.warning(e.message); return 0 })
-              if (n) message.success(`${n} bookmarks added`)
+            if (atQuota) {
+              message.error('Plan limit reached')
+              break
             }
+            const copy = await rea.profiles.create(`${p.name} (copy)`)
+            const generated = await rea.profiles.generate({
+              ...p,
+              id: copy.id,
+              name: `${p.name} (copy)`,
+              lastLaunchedAt: null
+            })
+            await rea.profiles.save({
+              ...generated,
+              id: copy.id,
+              name: `${p.name} (copy)`,
+              notes: p.notes,
+              tags: [...(p.tags ?? [])],
+              groupId: p.groupId,
+              proxyId: p.proxyId,
+              proxy: p.proxy,
+              color: p.color,
+              lastLaunchedAt: null
+            })
+            await reload()
+            message.success(`Cloned "${p.name}" with a fresh fingerprint`)
             break
           }
-          case 'bm-clearbm': await rea.bookmarks.clear(p.id).then(() => message.success('Bookmarks cleared')).catch((e: Error) => message.warning(e.message)); break
-          case 'bm-urls': {
-            const urls = window.prompt('Startup URLs (one per line):', (p.startupUrls ?? []).join('\n'))
-            if (urls !== null) {
-              const list = await rea.profiles.list()
-              const cur = list.find((x: any) => x.id === p.id)
-              if (cur) await rea.profiles.save({ ...cur, startupUrls: urls.split('\n').map((s) => s.trim()).filter(Boolean), startupUrlsEnabled: true })
+          case 'csv':
+            setExportIds([p.id])
+            break
+          case 'stop':
+            await stopProfile(p.id)
+            break
+          case 'lo-normal':
+            await launch(p.id)
+            break
+          case 'lo-max':
+            await launch(p.id, { maximized: true })
+            break
+          case 'lo-args':
+            setActionModal({ mode: 'lo-args', profile: p, value: p.customArgs ?? '' })
+            break
+          case 'lo-url':
+            setActionModal({ mode: 'lo-url', profile: p, value: 'https://' })
+            break
+          case 'lo-private':
+            await launch(p.id, { privateWindow: true })
+            break
+          case 'bm-import':
+            await rea.cookies
+              .import(p.id)
+              .then((n: number | null) => n != null && message.success(`Imported ${n} cookies`))
+              .catch((e: Error) => message.warning(e.message))
+            break
+          case 'bm-export':
+            await rea.cookies
+              .export(p.id, 'json')
+              .then((path: string | null) => path && message.success(`Cookies exported to ${path}`))
+              .catch((e: Error) => message.warning(e.message))
+            break
+          case 'bm-clean':
+            await rea.cookies
+              .clear(p.id)
+              .then(() => message.success('Cookies cleared'))
+              .catch((e: Error) => message.warning(e.message))
+            break
+          case 'bm-collector': {
+            const hide = message.loading('Cookie collector running (visiting warm-up sites)…', 0)
+            try {
+              await rea.cookies.collect(p.id)
+              message.success('Cookie collector finished')
+            } catch (e: any) {
+              message.warning(e.message)
+            } finally {
+              hide()
+              await refresh.statuses(p.id)
               await reload()
             }
             break
           }
-          case 'extensions': setEditingProfile(p); setEditTab('extensions'); break
-          case 'bk-now': await rea.backup.now(p.id).then((r: string | null) => message.success(r ? `Backup saved: ${r}` : 'Backup skipped')).catch((e: Error) => message.warning(e.message)); break
-          case 'bk-restore': await rea.backup.restore(p.id).then((r: string | null) => message.success(r ? `Restored from ${r}` : 'No backups found')).catch((e: Error) => message.warning(e.message)); break
-          case 'bk-export': await rea.backup.exportData(p.id).then((r: string | null) => r && message.success(`Exported to ${r}`)).catch((e: Error) => message.warning(e.message)); break
-          case 'bk-import': await rea.backup.importData(p.id).then((r: any) => r && message.success('Profile data imported')).catch((e: Error) => message.warning(e.message)); break
-          case 'bk-folder': await rea.backup.openFolder(p.id); break
+          case 'bm-addbm':
+            setActionModal({ mode: 'bm-addbm', profile: p, value: '' })
+            break
+          case 'bm-clearbm':
+            await rea.bookmarks
+              .clear(p.id)
+              .then(() => message.success('Bookmarks cleared'))
+              .catch((e: Error) => message.warning(e.message))
+            break
+          case 'bm-urls':
+            setActionModal({
+              mode: 'bm-urls',
+              profile: p,
+              value: (p.startupUrls ?? []).join('\n'),
+              enabled: p.startupUrlsEnabled ?? true
+            })
+            break
+          case 'extensions':
+            setEditTab('extensions')
+            setEditingProfile(p)
+            break
+          case 'bk-now':
+            await rea.backup
+              .now(p.id)
+              .then((r: string | null) => message.success(r ? `Backup saved: ${r}` : 'Backup skipped'))
+              .catch((e: Error) => message.warning(e.message))
+            break
+          case 'bk-restore':
+            await rea.backup
+              .restore(p.id)
+              .then(async (r: string | null) => {
+                message.success(r ? `Restored from ${r}` : 'No backups found')
+                await reload()
+              })
+              .catch((e: Error) => message.warning(e.message))
+            break
+          case 'bk-export':
+            await rea.backup
+              .exportData(p.id)
+              .then((r: string | null) => r && message.success(`Exported to ${r}`))
+              .catch((e: Error) => message.warning(e.message))
+            break
+          case 'bk-import':
+            await rea.backup
+              .importData(p.id)
+              .then(async (r: any) => {
+                if (r) {
+                  message.success('Profile data imported')
+                  await reload()
+                }
+              })
+              .catch((e: Error) => message.warning(e.message))
+            break
+          case 'bk-folder':
+            await rea.backup.openFolder(p.id)
+            break
           case 'disable': {
             const list = await rea.profiles.list()
             const cur = list.find((x: any) => x.id === p.id)
             if (cur) await rea.profiles.save({ ...cur, disabled: !cur.disabled })
             await reload()
+            message.success(p.disabled ? 'Profile enabled' : 'Profile disabled')
             break
           }
-          case 'delete': await trashProfile(p.id); break
+          case 'delete':
+            await trashProfile(p.id)
+            break
         }
       }
     }
-  }
-
-  async function bulkCreate() {
-    const n = window.prompt(t('profiles.bulkCreate'), '5')
-    const count = parseInt(n ?? '0', 10)
-    if (!count) return
-    for (let i = 0; i < count; i++) await rea.profiles.create(`Profile ${i + 1}`)
-    await refresh.profiles()
   }
 }
 

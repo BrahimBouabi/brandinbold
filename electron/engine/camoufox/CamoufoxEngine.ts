@@ -190,7 +190,11 @@ export class CamoufoxEngine extends EventEmitter implements BrowserEngine {
       // skip geoip so the exit IP is not reported as the WebRTC IP
     }
 
-    if (profile.screen.width && profile.screen.height) {
+    if ((profile as any).__maximized) {
+      const mw = Math.max(profile.screen.width || 1920, 1920)
+      const mh = Math.max(profile.screen.height || 1080, 1080)
+      options.window = [mw, mh]
+    } else if (profile.screen.width && profile.screen.height) {
       options.screen = {
         min_width: profile.screen.width,
         max_width: profile.screen.width,
@@ -397,7 +401,25 @@ export class CamoufoxEngine extends EventEmitter implements BrowserEngine {
 
 function buildHandle(profileId: string, context: BrowserContext, userDataDir: string): BrowserHandle {
   let stopped = false
+  const navListeners = new Set<(url: string) => void>()
+  const wirePage = (p: any) => {
+    p.on?.('framenavigated', (frame: any) => {
+      try {
+        if (frame === p.mainFrame()) {
+          const url = frame.url?.() ?? ''
+          if (/^https?:\/\//i.test(url)) {
+            for (const fn of navListeners) fn(url)
+          }
+        }
+      } catch {
+        /* ignore */
+      }
+    })
+  }
+  for (const p of context.pages()) wirePage(p)
+  context.on('page', wirePage)
   context.on('close', () => {
+    navListeners.clear()
     if (!stopped) engineEvents.emit('exit', profileId)
   })
   return {
@@ -442,6 +464,10 @@ function buildHandle(profileId: string, context: BrowserContext, userDataDir: st
       const pages = context.pages()
       const page = pages[0] ?? (await context.newPage())
       await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {})
+    },
+    onNavigate(cb: (url: string) => void): () => void {
+      navListeners.add(cb)
+      return () => navListeners.delete(cb)
     },
     // Graceful stop: close the windows normally and give the session store
     // time to flush; only hard-kill if the graceful path stalls.

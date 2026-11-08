@@ -12,7 +12,18 @@ const api = {
     purge: (id: string): Promise<boolean> => ipcRenderer.invoke('profiles:purge', id),
     emptyTrash: (): Promise<number> => ipcRenderer.invoke('profiles:emptyTrash'),
     generate: (profile: Profile): Promise<Profile> => ipcRenderer.invoke('profiles:generate', profile),
-    importPreview: (text: string): Promise<any> => ipcRenderer.invoke('profiles:importPreview', text),
+    bulkCreate: (opts: {
+      count: number
+      prefix?: string
+      startIndex?: number
+      os?: 'macos' | 'windows' | 'linux'
+      groupId?: string | null
+      proxyId?: string | null
+      tags?: string[]
+    }): Promise<{ created: Profile[]; skippedQuota: number }> =>
+      ipcRenderer.invoke('profiles:bulkCreate', opts),
+    importPreview: (text: string, fixAutomatically = true): Promise<any> =>
+      ipcRenderer.invoke('profiles:importPreview', text, fixAutomatically),
     storageInfo: (): Promise<any> => ipcRenderer.invoke('profiles:storageInfo'),
     purgeCache: (id?: string): Promise<any> => ipcRenderer.invoke('profiles:purgeCache', id),
     importRun: (payload: { text: string; fixAutomatically: boolean; duplicateMode: 'skip' | 'rename'; targetGroupId: string | null }): Promise<any> =>
@@ -22,11 +33,21 @@ const api = {
       options: { format: 'incogniton' | 'brandinbold'; includeNotes: boolean; includeCredentials: boolean }
     ): Promise<string | null> => ipcRenderer.invoke('profiles:export', ids, options)
   },
-  launch: (id: string, opts?: { extraArgs?: string; openUrlAfter?: string; maximized?: boolean }): Promise<any> =>
-    ipcRenderer.invoke('launch', id, opts),
+  launch: (
+    id: string,
+    opts?: { extraArgs?: string; openUrlAfter?: string; maximized?: boolean; privateWindow?: boolean }
+  ): Promise<any> => ipcRenderer.invoke('launch', id, opts),
   stop: (id: string): Promise<boolean> => ipcRenderer.invoke('stop', id),
   running: (): Promise<any[]> => ipcRenderer.invoke('running:list'),
   status: (id: string): Promise<{ status: string; detail?: string }> => ipcRenderer.invoke('status:get', id),
+  sync: {
+    status: (): Promise<{ active: boolean; mainId: string | null; followerIds: string[] }> =>
+      ipcRenderer.invoke('sync:status'),
+    start: (payload: { mainId: string; followerIds: string[]; initialUrl?: string }): Promise<any> =>
+      ipcRenderer.invoke('sync:start', payload),
+    navigate: (url: string): Promise<boolean> => ipcRenderer.invoke('sync:navigate', url),
+    stop: (): Promise<any> => ipcRenderer.invoke('sync:stop')
+  },
   groups: {
     list: (): Promise<any[]> => ipcRenderer.invoke('groups:list'),
     create: (name: string, pinned?: boolean, color?: string, description?: string): Promise<any> =>

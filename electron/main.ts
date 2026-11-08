@@ -28,9 +28,10 @@ import {
   cloudClient
 } from './cloud/cloudMain'
 import { getProfileDiskInfo, purgeTransientCaches } from './launcher/profileCache'
-import { mkdirSync } from 'fs'
-import { existsSync, readFileSync } from 'fs'
+import { mkdirSync, existsSync, readFileSync, writeFileSync, rmSync } from 'fs'
+import { randomBytes } from 'crypto'
 import Database from 'better-sqlite3'
+import { ENABLE_PLAN_LIMITS } from '../shared/config'
 import { ProfileStore } from './store/db'
 import { ChromeCdpEngine } from './engine/ChromeCdpEngine'
 import { CamoufoxEngine } from './engine/camoufox/CamoufoxEngine'
@@ -85,6 +86,11 @@ chromeEngine.on('exit', (profileId: string) => {
 
 ;(camoufoxEngine as any).on?.('exit', (profileId: string) => {
   registry.onBrowserExit(profileId)
+  flushPendingBookmarks(profileId)
+  if (activeSync?.mainId === profileId) {
+    activeSync.unsubscribe?.()
+    activeSync = null
+  }
   push('status', profileId, 'ready')
   // Step B: the user closed the browser window themselves → roam the session too
   void cloudUploadSession(profileId, join(app.getPath('userData'), 'profiles', profileId)).catch(() => {})
@@ -169,23 +175,94 @@ ipcMain.handle('profiles:generate', async (_e, profile: any) => {
   const pinned = await regenerateFingerprint(profile)
   return syncDisplayFields({ ...profile, fingerprint: pinned }, pinned)
 })
+ipcMain.handle(
+  'profiles:bulkCreate',
+  async (
+    _e,
+    opts: {
+      count: number
+      prefix?: string
+      startIndex?: number
+      os?: 'macos' | 'windows' | 'linux'
+      groupId?: string | null
+      proxyId?: string | null
+      tags?: string[]
+    }
+  ) => {
+    const count = Math.max(1, Math.min(50, Number(opts?.count) || 1))
+    const prefix = (opts?.prefix || 'Profile').trim()
+    const startIndex = Math.max(1, Number(opts?.startIndex) || 1)
+    const os = opts?.os && ['macos', 'windows', 'linux'].includes(opts.os) ? opts.os : 'macos'
+    const existing = store.list()
+    const user = cloudUser()
+    const max = cloudAuthed() && user ? (user.maxProfiles ?? 3) : (store.getSettings().maxProfiles ?? 3)
+    const enforceQuota = ENABLE_PLAN_LIMITS && cloudAuthed()
+    const remaining = enforceQuota ? Math.max(0, max - existing.length) : count
+
+    const created: Profile[] = []
+    let skippedQuota = 0
+    const libProxy = opts?.proxyId ? store.getProxy(opts.proxyId) : null
+
+    for (let i = 0; i < count; i++) {
+      if (enforceQuota && created.length >= remaining) {
+        skippedQuota++
+        continue
+      }
+      const name = `${prefix} ${startIndex + i}`
+      const base = store.create(name)
+      const draft: Profile = {
+        ...base,
+        os,
+        groupId: opts?.groupId ?? null,
+        proxyId: opts?.proxyId ?? null,
+        proxy: libProxy
+          ? {
+              type: libProxy.type,
+              host: libProxy.host,
+              port: libProxy.port,
+              username: libProxy.username,
+              password: libProxy.password
+            }
+          : base.proxy,
+        tags: Array.isArray(opts?.tags) ? opts.tags : []
+      }
+      const pinned = await regenerateFingerprint(draft)
+      const full = syncDisplayFields({ ...draft, fingerprint: pinned }, pinned)
+      store.save(full)
+      created.push(full)
+    }
+    if (created.length > 0) scheduleCloudPush()
+    return { created, skippedQuota }
+  }
+)
 
 // ---------- launch / stop ----------
-ipcMain.handle('launch', async (_e, id: string) => {
-  const profile = store.get(id)
-  if (!profile) throw new Error('Profile not found')
-  // TASK 10: pull the cloud session archive if it is newer than local
-  await cloudMaybeRestoreSession(id, join(app.getPath('userData'), 'profiles', id))
-  const result = await launcher.launch(profile)
-  // persist any display-field sync from pinning
-  const fresh = store.get(id)
-  if (fresh?.fingerprint) store.save(syncDisplayFields(fresh, fresh.fingerprint))
-  return result
-})
+ipcMain.handle(
+  'launch',
+  async (
+    _e,
+    id: string,
+    opts?: { extraArgs?: string; openUrlAfter?: string; maximized?: boolean; privateWindow?: boolean }
+  ) => {
+    const profile = store.get(id)
+    if (!profile) throw new Error('Profile not found')
+    // TASK 10: pull the cloud session archive if it is newer than local
+    await cloudMaybeRestoreSession(id, join(app.getPath('userData'), 'profiles', id))
+    const result = await launcher.launch(profile, opts)
+    // persist any display-field sync from pinning
+    const fresh = store.get(id)
+    if (fresh?.fingerprint) store.save(syncDisplayFields(fresh, fresh.fingerprint))
+    return result
+  }
+)
 ipcMain.handle('stop', async (_e, id: string) => {
   const ok = await launcher.stop(id)
-  // TASK 10: upload the vital session files after a graceful stop
   if (ok) {
+    flushPendingBookmarks(id)
+    if (activeSync?.mainId === id) {
+      activeSync.unsubscribe?.()
+      activeSync = null
+    }
     const dir = join(app.getPath('userData'), 'profiles', id)
     void cloudUploadSession(id, dir).catch(() => {})
   }
@@ -193,6 +270,71 @@ ipcMain.handle('stop', async (_e, id: string) => {
 })
 ipcMain.handle('running:list', () => registry.listRunning())
 ipcMain.handle('status:get', (_e, id: string) => registry.status(id))
+
+// ---------- synchronizer ----------
+let activeSync: {
+  mainId: string
+  followerIds: string[]
+  unsubscribe: (() => void) | null
+} | null = null
+
+ipcMain.handle('sync:status', () =>
+  activeSync
+    ? { active: true, mainId: activeSync.mainId, followerIds: activeSync.followerIds }
+    : { active: false, mainId: null, followerIds: [] }
+)
+ipcMain.handle(
+  'sync:start',
+  async (_e, payload: { mainId: string; followerIds: string[]; initialUrl?: string }) => {
+    if (activeSync?.unsubscribe) {
+      activeSync.unsubscribe()
+      activeSync = null
+    }
+    const followerIds = (payload.followerIds ?? []).filter((fid) => fid && fid !== payload.mainId)
+    if (!registry.get(payload.mainId)) {
+      const mp = store.get(payload.mainId)
+      if (!mp) throw new Error('Main profile not found')
+      await launcher.launch(mp)
+    }
+    for (const fid of followerIds) {
+      if (!registry.get(fid)) {
+        const fp = store.get(fid)
+        if (fp && !fp.disabled) await launcher.launch(fp).catch(() => {})
+      }
+    }
+    const mainHandle = registry.getHandle(payload.mainId)
+    const unsubscribe =
+      mainHandle?.onNavigate?.((url) => {
+        for (const fid of followerIds) {
+          void registry.getHandle(fid)?.openUrl(url).catch(() => {})
+        }
+      }) ?? null
+    activeSync = { mainId: payload.mainId, followerIds, unsubscribe }
+    if (payload.initialUrl && /^https?:\/\//i.test(payload.initialUrl.trim())) {
+      const targetUrl = payload.initialUrl.trim()
+      await mainHandle?.openUrl(targetUrl).catch(() => {})
+      for (const fid of followerIds) {
+        await registry.getHandle(fid)?.openUrl(targetUrl).catch(() => {})
+      }
+    }
+    return { active: true, mainId: payload.mainId, followerIds }
+  }
+)
+ipcMain.handle('sync:navigate', async (_e, url: string) => {
+  if (!activeSync) throw new Error('Synchronizer is not active')
+  const clean = url.trim()
+  if (!/^https?:\/\//i.test(clean)) throw new Error('Expected http:// or https:// URL')
+  await registry.getHandle(activeSync.mainId)?.openUrl(clean).catch(() => {})
+  for (const fid of activeSync.followerIds) {
+    await registry.getHandle(fid)?.openUrl(clean).catch(() => {})
+  }
+  return true
+})
+ipcMain.handle('sync:stop', () => {
+  activeSync?.unsubscribe?.()
+  activeSync = null
+  return { active: false, mainId: null, followerIds: [] }
+})
 
 // ---------- engine ----------
 ipcMain.handle('engine:status', async () => {
@@ -215,39 +357,54 @@ ipcMain.handle('engine:install', async () => {
 })
 
 // ---------- import ----------
-ipcMain.handle('profiles:importPreview', async (_e, text: string) => {
-  return previewImport(text)
+ipcMain.handle('profiles:importPreview', async (_e, text: string, fixAutomatically = true) => {
+  return previewImport(text, fixAutomatically)
 })
 ipcMain.handle('profiles:importRun', async (
   _e,
   payload: { text: string; fixAutomatically: boolean; duplicateMode: 'skip' | 'rename'; targetGroupId: string | null }
 ) => {
   const existing = store.list()
+  const deleted = store.listDeleted()
+  const user = cloudUser()
+  const max = cloudAuthed() && user ? (user.maxProfiles ?? 3) : (store.getSettings().maxProfiles ?? 3)
+  const enforceQuota = ENABLE_PLAN_LIMITS && cloudAuthed()
+  const maxQuotaRemaining = enforceQuota ? Math.max(0, max - existing.length) : null
+
   const result = runImport(payload.text, {
     fixAutomatically: payload.fixAutomatically,
     duplicateMode: payload.duplicateMode,
     targetGroupId: payload.targetGroupId,
     existingNames: existing.map((p) => p.name),
-    existingIds: existing.map((p) => p.id)
+    existingIds: existing.map((p) => p.id),
+    maxQuotaRemaining
   })
-  // persist: re-run the mapping per row to get the profiles (runImport is pure)
-  const preview = previewImport(payload.text)
+
   let saved = 0
-  for (const row of preview.rows) {
-    if (!row.profile) continue
-    const dupName = existing.some((p) => p.name === row.profile!.name)
-    if (dupName && payload.duplicateMode === 'skip') continue
-    if (dupName && payload.duplicateMode === 'rename') row.profile.name = `${row.profile.name} (imported)`
-    if (payload.targetGroupId) row.profile.groupId = payload.targetGroupId
-    else if ((row.profile as any).groupName) {
-      const gName = (row.profile as any).groupName
-      let grp = store.listGroups().find((g) => g.name.toLowerCase() === gName.toLowerCase())
-      if (!grp) grp = store.createGroup(gName)
-      row.profile.groupId = grp.id
+  let groupsChanged = false
+  for (const profile of result.profiles ?? []) {
+    // If a trashed profile had the same ID (e.g. export -> delete -> import), purge the trashed row so the ID is reused cleanly
+    if (deleted.some((d) => d.id === profile.id)) {
+      store.purge(profile.id)
+      unqueueCloudDelete('profiles', profile.id)
     }
-    store.save(row.profile)
+    if (payload.targetGroupId) {
+      profile.groupId = payload.targetGroupId
+    } else if ((profile as any).groupName) {
+      const gName = String((profile as any).groupName).trim()
+      if (gName) {
+        let grp = store.listGroups().find((g) => g.name.toLowerCase() === gName.toLowerCase())
+        if (!grp) {
+          grp = store.createGroup(gName)
+          groupsChanged = true
+        }
+        profile.groupId = grp.id
+      }
+    }
+    store.save(profile)
     saved++
   }
+  if (saved > 0 || groupsChanged) scheduleCloudPush()
   return { ...result, saved }
 })
 
@@ -406,18 +563,23 @@ ipcMain.handle('backup:restore', async (_e, id: string) => {
   return restoreLatestBackup(id)
 })
 ipcMain.handle('backup:export', async (_e, id: string) => {
+  if (registry.get(id)) throw new Error('Stop the profile before exporting data')
   const p = store.get(id)
+  if (!p) throw new Error('Profile not found')
   const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory', 'createDirectory'] })
-  if (canceled || !filePaths[0] || !p) return null
+  if (canceled || !filePaths[0]) return null
+  const src = ensureProfileDir(p)
   const dest = join(filePaths[0], `brandinbold-profile-${id.slice(0, 8)}`)
-  copyDir(join(app.getPath('userData'), 'profiles', id), dest)
+  copyDir(src, dest)
   return dest
 })
 ipcMain.handle('backup:import', async (_e, id: string) => {
   if (registry.get(id)) throw new Error('Stop the profile before importing data')
   const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow!, { properties: ['openDirectory'] })
   if (canceled || !filePaths[0]) return null
-  copyDir(filePaths[0], join(app.getPath('userData'), 'profiles', id))
+  const dest = join(app.getPath('userData'), 'profiles', id)
+  copyDir(filePaths[0], dest)
+  restoreProfileMetadataIfPresent(id, dest)
   return true
 })
 ipcMain.handle('backup:openFolder', async (_e, id: string) => {
@@ -573,11 +735,42 @@ function execFileSync2(cmd: string, args: string[]): void {
   require('child_process').execFileSync(cmd, args, { timeout: 600000, stdio: 'ignore' })
 }
 
-async function backupProfile(p: { id: string } | null): Promise<string | null> {
+function ensureProfileDir(p: Profile): string {
+  const dir = join(app.getPath('userData'), 'profiles', p.id)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'profile-metadata.json'), JSON.stringify(p, null, 2), 'utf8')
+  return dir
+}
+
+function restoreProfileMetadataIfPresent(id: string, dir: string): void {
+  const metaPath = join(dir, 'profile-metadata.json')
+  if (!existsSync(metaPath)) return
+  try {
+    const meta = JSON.parse(readFileSync(metaPath, 'utf8')) as Partial<Profile>
+    const cur = store.get(id)
+    if (cur && meta) {
+      store.save({
+        ...cur,
+        notes: meta.notes ?? cur.notes,
+        tags: Array.isArray(meta.tags) ? meta.tags : cur.tags,
+        startupUrls: Array.isArray(meta.startupUrls) ? meta.startupUrls : cur.startupUrls,
+        startupUrlsEnabled: meta.startupUrlsEnabled ?? cur.startupUrlsEnabled,
+        customArgs: meta.customArgs ?? cur.customArgs,
+        customArgsEnabled: meta.customArgsEnabled ?? cur.customArgsEnabled
+      })
+      scheduleCloudPush()
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+async function backupProfile(p: Profile | null): Promise<string | null> {
   if (!p) return null
   if (registry.get(p.id)) throw new Error('Stop the profile before backing up')
+  const src = ensureProfileDir(p)
   const dest = join(app.getPath('userData'), 'backups', p.id.slice(0, 8), new Date().toISOString().replace(/[:.]/g, '-'))
-  copyDir(join(app.getPath('userData'), 'profiles', p.id), dest)
+  copyDir(src, dest)
   return dest
 }
 
@@ -587,7 +780,9 @@ async function restoreLatestBackup(id: string): Promise<string | null> {
   const entries = await readdir(dir)
   if (!entries.length) return null
   const latest = entries.sort().pop()!
-  copyDir(join(dir, latest), join(app.getPath('userData'), 'profiles', id))
+  const targetDir = join(app.getPath('userData'), 'profiles', id)
+  copyDir(join(dir, latest), targetDir)
+  restoreProfileMetadataIfPresent(id, targetDir)
   return latest
 }
 
@@ -597,22 +792,41 @@ function profilePlacesDb(p: { id: string } | null): string | null {
   return existsSync(db) ? db : null
 }
 
-function addBookmarks(p: { id: string } | null, urls: string[]): number {
-  const db = profilePlacesDb(p)
-  if (!db) throw new Error('No places.sqlite yet — launch the profile once first')
+function writeBookmarksToPlacesDb(db: string, urls: string[]): number {
   const conn = new Database(db)
   try {
     let n = 0
-    for (const url of urls) {
+    const parentRow = conn.prepare("SELECT id FROM moz_bookmarks WHERE guid = 'toolbar_____' OR id = 3 LIMIT 1").get() as any
+    const parentId = parentRow?.id ?? 3
+    for (const rawUrl of urls) {
+      const url = rawUrl.trim()
+      if (!/^https?:\/\//i.test(url)) continue
       const place = conn.prepare('SELECT id FROM moz_places WHERE url = ?').get(url) as any
       let placeId = place?.id
       if (!placeId) {
-        conn.prepare('INSERT INTO moz_places (url, title, hidden, frecency, guide_enabled) VALUES (?, ?, 0, 0, 1)').run(url, url)
-        placeId = (conn.prepare('SELECT id FROM moz_places WHERE url = ?').get(url) as any).id
+        let revHost = '.'
+        try {
+          revHost = new URL(url).hostname.split('').reverse().join('') + '.'
+        } catch {
+          /* ignore */
+        }
+        const guid = randomBytes(9).toString('base64url').slice(0, 12)
+        const info = conn
+          .prepare(
+            'INSERT INTO moz_places (url, title, rev_host, hidden, typed, frecency, guid, foreign_count, url_hash) VALUES (?, ?, ?, 0, 1, 100, ?, 1, 0)'
+          )
+          .run(url, url, revHost, guid)
+        placeId = Number(info.lastInsertRowid)
+      } else {
+        conn.prepare('UPDATE moz_places SET foreign_count = COALESCE(foreign_count, 0) + 1 WHERE id = ?').run(placeId)
       }
       const now = Date.now() * 1000
-      conn.prepare('INSERT INTO moz_bookmarks (type, fk, parent, position, title, dateAdded, lastModified) VALUES (1, ?, ?, 0, ?, ?, ?)')
-        .run(placeId, 1, url, now, now)
+      const bmGuid = randomBytes(9).toString('base64url').slice(0, 12)
+      conn
+        .prepare(
+          'INSERT INTO moz_bookmarks (type, fk, parent, position, title, dateAdded, lastModified, guid) VALUES (1, ?, ?, 0, ?, ?, ?, ?)'
+        )
+        .run(placeId, parentId, url, now, now, bmGuid)
       n++
     }
     return n
@@ -621,9 +835,53 @@ function addBookmarks(p: { id: string } | null, urls: string[]): number {
   }
 }
 
-function clearBookmarks(p: { id: string } | null): boolean {
+function addBookmarks(p: { id: string } | null, urls: string[]): number {
+  if (!p) throw new Error('Profile not found')
+  const validUrls = (urls ?? []).map((u) => u.trim()).filter((u) => /^https?:\/\//i.test(u))
+  if (!validUrls.length) return 0
   const db = profilePlacesDb(p)
-  if (!db) return false
+  if (db) {
+    return writeBookmarksToPlacesDb(db, validUrls)
+  }
+  // Profile has not been launched yet: queue bookmarks in pending-bookmarks.json
+  const dir = join(app.getPath('userData'), 'profiles', p.id)
+  mkdirSync(dir, { recursive: true })
+  const pendingPath = join(dir, 'pending-bookmarks.json')
+  let existing: string[] = []
+  if (existsSync(pendingPath)) {
+    try {
+      existing = JSON.parse(readFileSync(pendingPath, 'utf8'))
+    } catch {
+      existing = []
+    }
+  }
+  const merged = [...new Set([...existing, ...validUrls])]
+  writeFileSync(pendingPath, JSON.stringify(merged, null, 2), 'utf8')
+  return validUrls.length
+}
+
+function flushPendingBookmarks(profileId: string): void {
+  const dir = join(app.getPath('userData'), 'profiles', profileId)
+  const pendingPath = join(dir, 'pending-bookmarks.json')
+  const dbPath = join(dir, 'places.sqlite')
+  if (!existsSync(pendingPath) || !existsSync(dbPath)) return
+  try {
+    const urls = JSON.parse(readFileSync(pendingPath, 'utf8')) as string[]
+    if (Array.isArray(urls) && urls.length) {
+      writeBookmarksToPlacesDb(dbPath, urls)
+    }
+    rmSync(pendingPath, { force: true })
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearBookmarks(p: { id: string } | null): boolean {
+  if (!p) return false
+  const dir = join(app.getPath('userData'), 'profiles', p.id)
+  rmSync(join(dir, 'pending-bookmarks.json'), { force: true })
+  const db = profilePlacesDb(p)
+  if (!db) return true
   const conn = new Database(db)
   try {
     conn.prepare('DELETE FROM moz_bookmarks WHERE type = 1').run()

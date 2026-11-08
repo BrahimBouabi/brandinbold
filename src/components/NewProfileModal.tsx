@@ -143,13 +143,16 @@ export function NewProfileModal({
   useEffect(() => {
     if (open) {
       setTab(initialTab ?? 'details')
+      const base = editing ?? makeDraft()
       const qs = new URLSearchParams(window.location.search)
       const prevOs = qs.get('os') as TargetOS | null
-      if (prevOs && ['windows', 'macos', 'linux'].includes(prevOs)) {
-        setD((cur) => ({ ...cur, os: prevOs }))
+      if (!editing && prevOs && ['windows', 'macos', 'linux'].includes(prevOs)) {
+        setD({ ...base, os: prevOs })
+      } else {
+        setD(base)
       }
     }
-  }, [open, initialTab])
+  }, [open, editing?.id, initialTab])
 
   // ---------- consistency engine ----------
   const warnings = useMemo(() => {

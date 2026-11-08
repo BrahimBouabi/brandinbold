@@ -31,6 +31,7 @@ export interface BrowserHandle {
   remote: { kind: 'cdp' | 'playwright'; wsUrl: string } | null
   cookies: CookieAccess | null
   openUrl(url: string): Promise<void>
+  onNavigate?(cb: (url: string) => void): () => void
   stop(): Promise<void>
 }
 
