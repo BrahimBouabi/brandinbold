@@ -25,7 +25,12 @@ const VITAL_FILES = [
   'places.sqlite-wal',
   'key4.db',
   'logins.json',
-  'formhistory.sqlite'
+  'formhistory.sqlite',
+  'webappsstore.sqlite',
+  'webappsstore.sqlite-wal',
+  'sessionstore.jsonlz4',
+  'sessionCheckpoints.json',
+  'bb-session-tabs.json'
 ]
 const VITAL_DIRS = ['sessionstore-backups']
 
@@ -176,8 +181,14 @@ export function packSessionState(profileDir: string): Buffer | null {
 /** Extract a cloud session archive into the profile dir (vital files only). */
 export function restoreSessionState(profileDir: string, archive: Buffer): boolean {
   try {
+    mkdirSync(profileDir, { recursive: true })
     const tmp = join(profileDir, '..', `.bb-restore-${Date.now()}.tgz`)
     writeFileSync(tmp, archive)
+    // Remove stale local session files before extracting so the cloud session archive takes full precedence
+    rmSync(join(profileDir, 'sessionstore.jsonlz4'), { force: true })
+    rmSync(join(profileDir, 'sessionCheckpoints.json'), { force: true })
+    rmSync(join(profileDir, 'bb-session-tabs.json'), { force: true })
+    rmSync(join(profileDir, 'sessionstore-backups'), { recursive: true, force: true })
     execFileSync('/usr/bin/tar', ['-xzf', tmp, '-C', profileDir], { timeout: 120000, stdio: 'ignore' })
     rmSync(tmp, { force: true })
     return true
@@ -204,9 +215,14 @@ export async function maybeRestoreSession(
     const meta = await client.downloadSessionMeta(profileId)
     if (!meta) return none
     const cloudT = ms(meta.updatedAt)
+    const hasLocalSession =
+      existsSync(join(profileDir, 'sessionstore.jsonlz4')) ||
+      existsSync(join(profileDir, 'bb-session-tabs.json')) ||
+      existsSync(join(profileDir, 'sessionstore-backups', 'recovery.jsonlz4')) ||
+      existsSync(join(profileDir, 'sessionstore-backups', 'bb-last-good.jsonlz4'))
     if (lastSynced) {
       if (cloudT <= ms(lastSynced)) return { restored: false, serverUpdatedAt: meta.updatedAt }
-    } else if (existsSync(join(profileDir, 'sessionstore-backups'))) {
+    } else if (hasLocalSession) {
       return none // local session exists and was never synced: never overwrite it blindly
     }
     const data = await client.downloadSession(profileId)

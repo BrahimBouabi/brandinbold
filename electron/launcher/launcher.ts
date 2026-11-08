@@ -69,10 +69,26 @@ export class Launcher {
         this.store.save(profile)
       }
 
+      // Apply global Browser settings from Settings > Browser without mutating the stored profile JSON
+      const appSettings = this.store.getSettings()
+      const effectiveRestore =
+        appSettings.restoreSessions !== false && profile.startup?.restoreSession !== false
+      const launchProfile: Profile = {
+        ...profile,
+        startup: {
+          ...profile.startup,
+          restoreSession: effectiveRestore
+        },
+        ...({
+          __quitOnWindowClose: appSettings.quitOnWindowClose !== false,
+          __savePasswords: appSettings.savePasswords !== false,
+          __saveHistory: appSettings.saveHistory !== false
+        } as any)
+      }
 
       // stage 2: proxy check + IP info (feeds geoip and custom geo modes)
-      const ipInfo = await checkProxy(profile.proxy, profile.proxy.type === 'none' ? 3500 : 12000)
-      if (profile.proxy.type !== 'none' && !ipInfo.ok) {
+      const ipInfo = await checkProxy(launchProfile.proxy, launchProfile.proxy.type === 'none' ? 3500 : 12000)
+      if (launchProfile.proxy.type !== 'none' && !ipInfo.ok) {
         this.registry.markError(profile.id, `Proxy check failed: ${ipInfo.error}`)
         throw new Error(`Proxy check failed: ${ipInfo.error}`)
       }
@@ -83,7 +99,7 @@ export class Launcher {
       const userDataDir = join(app.getPath('userData'), 'profiles', profile.id)
       const { mkdir } = await import('fs/promises')
       await mkdir(userDataDir, { recursive: true })
-      const { result, handle } = await this.engine.launch(profile, userDataDir, ipInfo)
+      const { result, handle } = await this.engine.launch(launchProfile, userDataDir, ipInfo)
       if (opts?.openUrlAfter && /^https?:\/\//i.test(opts.openUrlAfter.trim())) {
         await handle.openUrl(opts.openUrlAfter.trim()).catch(() => {})
       }

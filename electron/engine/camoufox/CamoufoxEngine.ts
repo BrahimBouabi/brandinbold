@@ -1,7 +1,7 @@
 import { execFileSync } from 'child_process'
 import { app } from 'electron'
 import { EventEmitter } from 'events'
-import { existsSync, readFileSync, readlinkSync, rmSync } from 'fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'fs'
 import { basename, join } from 'path'
 import { launchOptions } from 'camoufox'
 import { getActivePath } from 'camoufox/dist/multiversion.js'
@@ -113,9 +113,14 @@ export class CamoufoxEngine extends EventEmitter implements BrowserEngine {
     cleanStaleFirefoxLocks(userDataDir)
     // TASK 9: pre-launch transient-cache purge (crash leftovers etc.)
     purgeTransientCaches(userDataDir, 'firefox')
-    if (profile.startup.clearSession) {
+    const restore = profile.startup.restoreSession !== false && !profile.startup.clearSession // default ON
+    if (profile.startup.clearSession || !restore) {
       rmSync(join(userDataDir, 'sessionstore-backups'), { recursive: true, force: true })
+      rmSync(join(userDataDir, 'sessionstore.jsonlz4'), { force: true })
+      rmSync(join(userDataDir, 'sessionCheckpoints.json'), { force: true })
+      rmSync(join(userDataDir, 'bb-session-tabs.json'), { force: true })
     }
+    const expectedRestoreUrls = restore ? prepareSessionForLaunch(userDataDir) : []
 
     const useProxy = profile.proxy.type !== 'none' && !!profile.proxy.host && !!profile.proxy.port
     const scheme =
@@ -132,8 +137,6 @@ export class CamoufoxEngine extends EventEmitter implements BrowserEngine {
       profile.color ?? '#8952ef',
       profile.showNameInBrowser !== false
     )
-
-    const restore = profile.startup.restoreSession !== false // default ON
 
     const options: Record<string, any> = {
       os: mapOs(profile.os),
@@ -220,13 +223,20 @@ export class CamoufoxEngine extends EventEmitter implements BrowserEngine {
     const customAddons = (profile.extensions ?? [])
       .filter((e) => e.type === 'custom' && e.path && existsSync(e.path))
       .map((e) => e.path)
-    // Startup URLs (about:blank is the default; restore overrides)
+    // Startup URLs (about:blank is the default; restore overrides unless no sessionstore exists yet)
     const startupUrls = profile.startupUrlsEnabled
       ? (profile.startupUrls ?? []).filter((u) => /^https?:\/\//.test(u.trim())).map((u) => u.trim())
       : []
-    if (startupUrls.length && !restore) {
+    const hasNativeSessionStore = existsSync(join(userDataDir, 'sessionstore.jsonlz4'))
+    if (restore && expectedRestoreUrls.length > 0 && !hasNativeSessionStore) {
+      options.args = expectedRestoreUrls
+    } else if (startupUrls.length && (!restore || (!hasNativeSessionStore && expectedRestoreUrls.length === 0))) {
       options.args = startupUrls
-    } else if (profile.startup.homepage && /^https?:\/\//.test(profile.startup.homepage) && !restore) {
+    } else if (
+      profile.startup.homepage &&
+      /^https?:\/\//.test(profile.startup.homepage) &&
+      (!restore || (!hasNativeSessionStore && expectedRestoreUrls.length === 0))
+    ) {
       options.args = [profile.startup.homepage]
     }
 
@@ -328,14 +338,18 @@ export class CamoufoxEngine extends EventEmitter implements BrowserEngine {
       'browser.region.network.url': '',
       'distribution.searchplugins.defaultLocale': 'en-US',
       // session restore (full windows/tabs/history recovery)
-      'browser.sessionstore.resume_from_crash': true,
+      'browser.sessionstore.resume_from_crash': restore,
       'browser.sessionstore.max_resumed_crashes': -1,
-      'browser.sessionstore.interval': 15000,
+      'browser.sessionstore.interval': 1000,
       'browser.sessionstore.privacy_level': 0,
+      'browser.link.open_newwindow': 3,
+      'browser.link.open_newwindow.restriction': 0,
       'browser.warnOnQuit': false,
       'browser.shell.checkDefaultBrowser': false,
       'browser.startup.homepage_override.mstone': 'ignore',
       'datareporting.policy.firstRunURL': '',
+      ...((profile as any).__savePasswords === false ? { 'signon.rememberSignons': false } : {}),
+      ...((profile as any).__saveHistory === false ? { 'places.history.enabled': false } : {}),
       ...(profile.dnsEnabled && profile.dnsServer
         ? {
             'network.trr.mode': 2,
@@ -370,14 +384,20 @@ export class CamoufoxEngine extends EventEmitter implements BrowserEngine {
     const context = (await firefox.launchPersistentContext(userDataDir, lo as any)) as BrowserContext
 
     const pid = await findFirefoxPid(userDataDir)
-    // Session restore can bring back the old broken `127.0.0.1/?q=` tabs
-    // from before the startup-page fix — close them on arrival.
-    for (const p of context.pages()) {
-      if (/^http:\/\/127\.0\.0\.1\/\?q=/.test(p.url())) {
-        await p.close().catch(() => {})
+    const isPrivateLaunch = (options.args ?? []).includes('-private-window')
+    if (restore && !isPrivateLaunch) {
+      await reconcileRestoredTabs(context, expectedRestoreUrls)
+    } else {
+      // Session restore can bring back the old broken `127.0.0.1/?q=` tabs
+      // from before the startup-page fix — close them on arrival.
+      for (const p of context.pages()) {
+        if (/^http:\/\/127\.0\.0\.1\/\?q=/.test(p.url())) {
+          await p.close().catch(() => {})
+        }
       }
     }
-    const handle = buildHandle(profile.id, context, userDataDir)
+    const quitOnWindowClose = (profile as any).__quitOnWindowClose !== false
+    const handle = buildHandle(profile.id, context, userDataDir, quitOnWindowClose)
     if (profile.pendingCookies?.raw) {
       try {
         const { parsePendingCookies } = await import('../../cookies/parse')
@@ -399,9 +419,41 @@ export class CamoufoxEngine extends EventEmitter implements BrowserEngine {
   }
 }
 
-function buildHandle(profileId: string, context: BrowserContext, userDataDir: string): BrowserHandle {
+function buildHandle(
+  profileId: string,
+  context: BrowserContext,
+  userDataDir: string,
+  quitOnWindowClose = true
+): BrowserHandle {
   let stopped = false
+  let lastKnownUrls: string[] = readSavedSessionTabs(userDataDir)
   const navListeners = new Set<(url: string) => void>()
+
+  const captureLiveTabs = (): void => {
+    if (stopped) return
+    try {
+      const pages = context.pages()
+      const recUrls = snapshotGoodRecovery(userDataDir)
+      if (pages.length === 0 && recUrls.length === 0) return // window closed — never overwrite lastKnownUrls with []
+      const pageUrls = pages.map((p) => p.url()).filter(isRestorableUrl)
+      const merged = [...pageUrls]
+      for (const u of recUrls) {
+        if (!merged.some((m) => normalizeUrlForCompare(m) === normalizeUrlForCompare(u))) {
+          merged.push(u)
+        }
+      }
+      if (merged.length > 0) {
+        lastKnownUrls = merged
+        writeSavedSessionTabs(userDataDir, merged)
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const syncTimer = setInterval(captureLiveTabs, 1200)
+  let closeDebounce: ReturnType<typeof setTimeout> | null = null
+
   const wirePage = (p: any) => {
     p.on?.('framenavigated', (frame: any) => {
       try {
@@ -410,19 +462,54 @@ function buildHandle(profileId: string, context: BrowserContext, userDataDir: st
           if (/^https?:\/\//i.test(url)) {
             for (const fn of navListeners) fn(url)
           }
+          captureLiveTabs()
         }
       } catch {
         /* ignore */
       }
     })
+    p.on?.('load', () => captureLiveTabs())
+    p.on?.('close', () => {
+      if (stopped) return
+      if (closeDebounce) clearTimeout(closeDebounce)
+      closeDebounce = setTimeout(() => {
+        if (stopped) return
+        try {
+          const remaining = context.pages()
+          if (remaining.length === 0) {
+            // All browser windows were closed (e.g. red × button on macOS).
+            // Shut down the headless/windowless process cleanly and preserve the session.
+            if (quitOnWindowClose) {
+              void handle.stop().then(() => {
+                engineEvents.emit('exit', profileId)
+              })
+            }
+          } else {
+            captureLiveTabs()
+          }
+        } catch {
+          /* ignore */
+        }
+      }, 350)
+    })
   }
   for (const p of context.pages()) wirePage(p)
+  captureLiveTabs()
   context.on('page', wirePage)
   context.on('close', () => {
+    clearInterval(syncTimer)
+    if (closeDebounce) clearTimeout(closeDebounce)
     navListeners.clear()
-    if (!stopped) engineEvents.emit('exit', profileId)
+    if (!stopped) {
+      stopped = true
+      ensureSessionFilesAfterClose(userDataDir, lastKnownUrls)
+      cleanStaleFirefoxLocks(userDataDir)
+      purgeTransientCaches(userDataDir, 'firefox')
+      engineEvents.emit('exit', profileId)
+    }
   })
-  return {
+
+  const handle: BrowserHandle = {
     profileId,
     pid: null,
     debugPort: null,
@@ -464,15 +551,20 @@ function buildHandle(profileId: string, context: BrowserContext, userDataDir: st
       const pages = context.pages()
       const page = pages[0] ?? (await context.newPage())
       await page.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {})
+      captureLiveTabs()
     },
     onNavigate(cb: (url: string) => void): () => void {
       navListeners.add(cb)
       return () => navListeners.delete(cb)
     },
-    // Graceful stop: close the windows normally and give the session store
+    // Graceful stop: snapshot live tabs, close the windows normally and give the session store
     // time to flush; only hard-kill if the graceful path stalls.
     async stop(): Promise<void> {
+      if (stopped) return
+      captureLiveTabs()
       stopped = true
+      clearInterval(syncTimer)
+      if (closeDebounce) clearTimeout(closeDebounce)
       const graceful = Promise.race([
         context.close().then(() => true).catch(() => false),
         new Promise<boolean>((r) => setTimeout(() => r(false), 10000))
@@ -495,9 +587,319 @@ function buildHandle(profileId: string, context: BrowserContext, userDataDir: st
           /* nothing left to kill */
         }
       }
+      ensureSessionFilesAfterClose(userDataDir, lastKnownUrls)
       cleanStaleFirefoxLocks(userDataDir)
       // TASK 9: transient-cache purge AFTER the session is safely on disk
       purgeTransientCaches(userDataDir, 'firefox')
+    }
+  }
+  return handle
+}
+
+const SESSION_TABS_FILE = 'bb-session-tabs.json'
+const LAST_GOOD_SESSION_FILE = 'bb-last-good.jsonlz4'
+const FINAL_CHECKPOINTS_JSON = JSON.stringify({
+  'profile-after-change': true,
+  'final-ui-startup': true,
+  'sessionstore-windows-restored': true,
+  'quit-application-granted': true,
+  'quit-application': true,
+  'sessionstore-final-state-write-complete': true,
+  'profile-change-net-teardown': true,
+  'profile-change-teardown': true,
+  'profile-before-change': true
+})
+
+function isRestorableUrl(url: string | undefined | null): boolean {
+  if (!url) return false
+  const u = url.trim()
+  if (!u || u === 'about:blank' || u === 'about:newtab' || u === 'about:home' || u === 'about:privatebrowsing') {
+    return false
+  }
+  if (u.startsWith('chrome://browser/content/blanktab')) return false
+  if (/^http:\/\/127\.0\.0\.1\/\?q=/.test(u)) return false
+  return /^(https?:|about:|file:)/i.test(u)
+}
+
+function normalizeUrlForCompare(url: string): string {
+  return url.trim().replace(/\/+$/, '')
+}
+
+function readMozLz4(filePath: string): any | null {
+  try {
+    if (!existsSync(filePath)) return null
+    const buf = readFileSync(filePath)
+    if (buf.length < 12 || buf.slice(0, 8).toString('utf8') !== 'mozLz40\0') return null
+    const outSize = buf.readUInt32LE(8)
+    const out = Buffer.alloc(outSize)
+    let ip = 12
+    let op = 0
+    while (ip < buf.length) {
+      const token = buf[ip++]
+      let litLen = token >> 4
+      if (litLen === 15) {
+        let b: number
+        do {
+          b = buf[ip++]
+          litLen += b
+        } while (b === 255 && ip < buf.length)
+      }
+      buf.copy(out, op, ip, ip + litLen)
+      op += litLen
+      ip += litLen
+      if (ip >= buf.length) break
+      const offset = buf.readUInt16LE(ip)
+      ip += 2
+      let matchLen = (token & 0x0f) + 4
+      if (matchLen === 19) {
+        let b: number
+        do {
+          b = buf[ip++]
+          matchLen += b
+        } while (b === 255 && ip < buf.length)
+      }
+      for (let i = 0; i < matchLen; i++) {
+        out[op] = out[op - offset]
+        op++
+      }
+    }
+    return JSON.parse(out.toString('utf8'))
+  } catch {
+    return null
+  }
+}
+
+function extractMozLz4TabUrls(filePath: string): { openUrls: string[]; closedWinUrls: string[] } {
+  const data = readMozLz4(filePath)
+  if (!data) return { openUrls: [], closedWinUrls: [] }
+  const extractFromWindows = (wins: any[]): string[] => {
+    const urls: string[] = []
+    for (const w of wins ?? []) {
+      for (const t of w?.tabs ?? []) {
+        const entries = t?.entries ?? []
+        if (!entries.length) continue
+        const idx =
+          typeof t.index === 'number' && t.index >= 1 && t.index <= entries.length ? t.index - 1 : entries.length - 1
+        const u = entries[idx]?.url ?? entries[entries.length - 1]?.url ?? ''
+        if (isRestorableUrl(u)) urls.push(u)
+      }
+    }
+    return urls
+  }
+  return {
+    openUrls: extractFromWindows(data.windows ?? []),
+    closedWinUrls: extractFromWindows(data._closedWindows ? [data._closedWindows[0]] : [])
+  }
+}
+
+function readSavedSessionTabs(userDataDir: string): string[] {
+  try {
+    const p = join(userDataDir, SESSION_TABS_FILE)
+    if (!existsSync(p)) return []
+    const parsed = JSON.parse(readFileSync(p, 'utf8'))
+    const urls = Array.isArray(parsed?.urls) ? parsed.urls : Array.isArray(parsed) ? parsed : []
+    return urls.filter((u: any) => typeof u === 'string' && isRestorableUrl(u))
+  } catch {
+    return []
+  }
+}
+
+function writeSavedSessionTabs(userDataDir: string, urls: string[]): void {
+  const clean = urls.filter(isRestorableUrl)
+  if (!clean.length) return
+  try {
+    mkdirSync(userDataDir, { recursive: true })
+    writeFileSync(
+      join(userDataDir, SESSION_TABS_FILE),
+      JSON.stringify({ updatedAt: new Date().toISOString(), urls: clean }, null, 2),
+      'utf8'
+    )
+  } catch {
+    /* ignore */
+  }
+}
+
+function snapshotGoodRecovery(userDataDir: string): string[] {
+  try {
+    const backupsDir = join(userDataDir, 'sessionstore-backups')
+    const recPath = join(backupsDir, 'recovery.jsonlz4')
+    if (!existsSync(recPath)) return []
+    const { openUrls } = extractMozLz4TabUrls(recPath)
+    if (openUrls.length > 0) {
+      copyFileSync(recPath, join(backupsDir, LAST_GOOD_SESSION_FILE))
+      return openUrls
+    }
+  } catch {
+    /* ignore */
+  }
+  return []
+}
+
+function ensureSessionFilesAfterClose(userDataDir: string, lastKnownUrls: string[]): void {
+  try {
+    const rootSession = join(userDataDir, 'sessionstore.jsonlz4')
+    const rootUrls = extractMozLz4TabUrls(rootSession).openUrls
+    if (rootUrls.length > 0) {
+      const merged = [...rootUrls]
+      for (const u of lastKnownUrls) {
+        if (!merged.some((m) => normalizeUrlForCompare(m) === normalizeUrlForCompare(u))) {
+          merged.push(u)
+        }
+      }
+      writeSavedSessionTabs(userDataDir, merged)
+      return
+    }
+
+    if (lastKnownUrls.length > 0) {
+      writeSavedSessionTabs(userDataDir, lastKnownUrls)
+    }
+
+    const backupsDir = join(userDataDir, 'sessionstore-backups')
+    const candidates = [
+      join(backupsDir, LAST_GOOD_SESSION_FILE),
+      join(backupsDir, 'recovery.jsonlz4'),
+      join(backupsDir, 'recovery.baklz4'),
+      join(backupsDir, 'previous.jsonlz4')
+    ]
+    for (const cand of candidates) {
+      const { openUrls } = extractMozLz4TabUrls(cand)
+      if (openUrls.length > 0) {
+        copyFileSync(cand, rootSession)
+        writeFileSync(join(userDataDir, 'sessionCheckpoints.json'), FINAL_CHECKPOINTS_JSON, 'utf8')
+        const merged = [...openUrls]
+        for (const u of lastKnownUrls) {
+          if (!merged.some((m) => normalizeUrlForCompare(m) === normalizeUrlForCompare(u))) {
+            merged.push(u)
+          }
+        }
+        writeSavedSessionTabs(userDataDir, merged)
+        return
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+function prepareSessionForLaunch(userDataDir: string): string[] {
+  const rootSession = join(userDataDir, 'sessionstore.jsonlz4')
+  let mainUrls = extractMozLz4TabUrls(rootSession).openUrls
+
+  const backupsDir = join(userDataDir, 'sessionstore-backups')
+  const candidates = [
+    join(backupsDir, LAST_GOOD_SESSION_FILE),
+    join(backupsDir, 'recovery.jsonlz4'),
+    join(backupsDir, 'recovery.baklz4'),
+    join(backupsDir, 'previous.jsonlz4')
+  ]
+
+  if (mainUrls.length === 0) {
+    for (const cand of candidates) {
+      const { openUrls } = extractMozLz4TabUrls(cand)
+      if (openUrls.length > 0) {
+        try {
+          copyFileSync(cand, rootSession)
+          writeFileSync(join(userDataDir, 'sessionCheckpoints.json'), FINAL_CHECKPOINTS_JSON, 'utf8')
+          mainUrls = openUrls
+        } catch {
+          /* ignore */
+        }
+        break
+      }
+    }
+  }
+
+  let savedUrls = readSavedSessionTabs(userDataDir)
+  if (savedUrls.length === 0 && mainUrls.length > 0) {
+    savedUrls = mainUrls
+    writeSavedSessionTabs(userDataDir, savedUrls)
+  } else if (savedUrls.length === 0) {
+    // Check _closedWindows in root or candidate files as a last-resort recovery
+    for (const f of [rootSession, ...candidates]) {
+      const { closedWinUrls } = extractMozLz4TabUrls(f)
+      if (closedWinUrls.length > 0) {
+        savedUrls = closedWinUrls
+        writeSavedSessionTabs(userDataDir, savedUrls)
+        break
+      }
+    }
+  }
+
+  if (mainUrls.length === 0 && existsSync(rootSession)) {
+    // Remove empty sessionstore.jsonlz4 (windows: []) so it cannot suppress startup args or recovery
+    try {
+      rmSync(rootSession, { force: true })
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if ((mainUrls.length > 0 || savedUrls.length > 0) && !existsSync(join(userDataDir, 'prefs.js'))) {
+    // Firefox checks for the existence of prefs.js before user.js: if prefs.js is missing (e.g. after
+    // extracting a cloud session archive on a new machine), Firefox treats the folder as a brand-new
+    // profile and skips SessionStore recovery unless a minimal prefs.js file is present.
+    try {
+      writeFileSync(
+        join(userDataDir, 'prefs.js'),
+        '// Mozilla User Preferences\nuser_pref("browser.startup.page", 3);\n',
+        'utf8'
+      )
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return savedUrls.length > 0 ? savedUrls : mainUrls
+}
+
+async function reconcileRestoredTabs(context: BrowserContext, expectedUrls: string[]): Promise<void> {
+  if (expectedUrls.length > 0) {
+    // Wait up to 2s for Firefox's native SessionStore to finish opening restored tabs
+    for (let i = 0; i < 14; i++) {
+      const currentUrls = context
+        .pages()
+        .map((p) => p.url())
+        .filter(isRestorableUrl)
+        .map(normalizeUrlForCompare)
+      const allPresent = expectedUrls.every((u) => currentUrls.includes(normalizeUrlForCompare(u)))
+      if (allPresent) break
+      await new Promise((r) => setTimeout(r, 150))
+    }
+
+    // Open any expected URLs that Firefox SessionStore missed (e.g., opened < 1s before stop or after window close)
+    const openNormalized = new Set(
+      context
+        .pages()
+        .map((p) => p.url())
+        .filter(isRestorableUrl)
+        .map(normalizeUrlForCompare)
+    )
+    const missing = expectedUrls.filter((u) => !openNormalized.has(normalizeUrlForCompare(u)))
+    for (const url of missing) {
+      const blankPage = context.pages().find((p) => !isRestorableUrl(p.url()))
+      const targetPage = blankPage ?? (await context.newPage().catch(() => null))
+      if (targetPage) {
+        await targetPage.goto(url, { waitUntil: 'domcontentloaded' }).catch(() => {})
+        openNormalized.add(normalizeUrlForCompare(url))
+      }
+    }
+  }
+
+  // Close leftover about:blank / blanktab / 127.0.0.1/?q= tabs created by Playwright launchPersistentContext
+  // whenever at least one real restored tab is present.
+  const allPages = context.pages()
+  const hasRestored = allPages.some((p) => isRestorableUrl(p.url()))
+  if (hasRestored) {
+    for (const p of allPages) {
+      if (!isRestorableUrl(p.url())) {
+        await p.close().catch(() => {})
+      }
+    }
+  } else {
+    for (const p of allPages) {
+      if (/^http:\/\/127\.0\.0\.1\/\?q=/.test(p.url())) {
+        await p.close().catch(() => {})
+      }
     }
   }
 }
