@@ -47,7 +47,7 @@ const statusColor: Record<string, string> = {
 
 export function ProfilesPage() {
   const { t } = useTranslation()
-  const { profiles, groups, proxies, settings, statuses, refresh } = useApp()
+  const { profiles, groups, proxies, settings, statuses, cloudStatus, refresh } = useApp()
   const [tab, setTab] = useState<string>('all')
   const [search, setSearch] = useState('')
   const [condensed, setCondensed] = useState(false)
@@ -85,8 +85,10 @@ export function ProfilesPage() {
     }
   }, [profiles])
 
-  const max = settings.maxProfiles ?? 3
-  const atQuota = ENABLE_PLAN_LIMITS && profiles.length >= max
+  const authed = !!cloudStatus?.authed && !!cloudStatus?.user
+  const max = authed ? (cloudStatus!.user!.maxProfiles ?? 3) : (settings.maxProfiles ?? 3)
+  const atQuota = ENABLE_PLAN_LIMITS && authed && profiles.length >= max
+  const unsyncedSet = useMemo(() => new Set(cloudStatus?.unsyncedProfileIds ?? []), [cloudStatus])
 
   const rows = useMemo(() => {
     let list = [...profiles]
@@ -170,6 +172,11 @@ export function ProfilesPage() {
           </span>
           <b>{v}</b>
           {p.disabled ? <Tag style={{ borderRadius: 6 }}>disabled</Tag> : null}
+          {unsyncedSet.has(p.id) ? (
+            <Tag color="warning" style={{ borderRadius: 6, fontSize: 11 }}>
+              local only (plan limit)
+            </Tag>
+          ) : null}
         </span>
       )
     },
@@ -399,6 +406,35 @@ export function ProfilesPage() {
           </Popover>
         </div>
       </div>
+
+      {unsyncedSet.size > 0 && (
+        <div
+          style={{
+            marginBottom: 12,
+            padding: '10px 14px',
+            borderRadius: 10,
+            background: 'rgba(232,185,62,0.1)',
+            border: '1px solid rgba(232,185,62,0.35)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            fontSize: 12.5
+          }}
+        >
+          <span>
+            <b>{unsyncedSet.size} profile{unsyncedSet.size === 1 ? '' : 's'} stored locally only</b> — your{' '}
+            <b>{cloudStatus?.user?.plan ?? 'free'}</b> plan syncs up to <b>{max}</b> profiles to the cloud.
+          </span>
+          <a
+            onClick={() =>
+              void rea.system.openExternal(cloudStatus?.webUrl || 'https://cloud-web-production-f49c.up.railway.app')
+            }
+            style={{ color: '#8952ef', fontWeight: 600 }}
+          >
+            Manage Plan ↗
+          </a>
+        </div>
+      )}
 
       {tab === 'groups' ? (
         <GroupsPanel onGoToGroup={(g) => setTab(g)} />

@@ -1,5 +1,5 @@
 /**
- * Cloud client (TASK 10 Étape 2.4) — HTTP surface of cloud/api for the
+ * Cloud client (TASK 10 Étape 2.4 + Step 1) — HTTP surface of cloud/api for the
  * Electron main process. Framework-free: config (api url + token store) is
  * injected, so the module is testable standalone via esbuild.
  */
@@ -7,9 +7,29 @@
 export interface CloudUser {
   id: string
   email: string
+  username?: string
   name: string
   plan: string
   maxProfiles: number
+  totpEnabled?: boolean
+}
+
+export interface RejectedProfile {
+  id: string
+  name: string
+  reason: 'quota_exceeded'
+  maxProfiles: number
+}
+
+export interface CloudPushResponse {
+  profiles: number
+  groups: number
+  proxies: number
+  deleted: number
+  skipped: number
+  maxProfiles?: number
+  activeProfiles?: number
+  rejectedProfiles?: RejectedProfile[]
 }
 
 export interface CloudClientConfig {
@@ -54,28 +74,45 @@ export function createCloudClient(cfg: CloudClientConfig) {
     const ct = res.headers.get('content-type') ?? ''
     const parsed: unknown = ct.includes('json') ? await res.json() : res
     if (!res.ok) {
-      const msg = typeof parsed === 'object' && parsed && 'error' in (parsed as Record<string, unknown>) ? String((parsed as Record<string, unknown>).error) : `HTTP ${res.status}`
-      throw Object.assign(new Error(msg), { statusCode: res.status })
+      const errObj = typeof parsed === 'object' && parsed ? (parsed as Record<string, unknown>) : {}
+      const msg = 'error' in errObj ? String(errObj.error) : `HTTP ${res.status}`
+      const prefix = errObj.totpRequired ? '[2FA_REQUIRED] ' : ''
+      throw Object.assign(new Error(prefix + msg), {
+        statusCode: res.status,
+        totpRequired: !!errObj.totpRequired
+      })
     }
     return parsed
   }
 
   return {
     health: () => raw('/api/health', {}, false).then((r) => r.ok).catch(() => false),
-    register: async (email: string, name: string, password: string) => {
-      const body = await request('/api/auth/register', { method: 'POST', body: JSON.stringify({ email, name, password }) }, false)
+    register: async (email: string, name: string, password: string, username?: string) => {
+      const body = await request(
+        '/api/auth/register',
+        { method: 'POST', body: JSON.stringify({ email, name, password, username }) },
+        false
+      )
       cfg.setTokens(body.token, body.refreshToken)
       return body as { user: CloudUser }
     },
-    login: async (email: string, password: string) => {
-      const body = await request('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }, false)
+    login: async (email: string, password: string, totpCode?: string) => {
+      const body = await request(
+        '/api/auth/login',
+        { method: 'POST', body: JSON.stringify({ email, password, totpCode }) },
+        false
+      )
       cfg.setTokens(body.token, body.refreshToken)
       return body as { user: CloudUser }
     },
     logout: () => cfg.setTokens(null, null),
-    me: () => request('/api/auth/me'),
+    me: () => request('/api/auth/me') as Promise<{ user: CloudUser }>,
+    updateProfile: (patch: { name?: string; username?: string }) =>
+      request('/api/auth/me', { method: 'PATCH', body: JSON.stringify(patch) }) as Promise<{ ok: boolean; user: CloudUser }>,
+    changePassword: (currentPassword: string, newPassword: string) =>
+      request('/api/auth/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
     pull: () => request('/api/sync/pull'),
-    push: async (payload: { profiles?: unknown[]; groups?: unknown[]; proxies?: unknown[]; deleted?: unknown }) =>
+    push: async (payload: { profiles?: unknown[]; groups?: unknown[]; proxies?: unknown[]; deleted?: unknown }): Promise<CloudPushResponse> =>
       await request('/api/sync/push', { method: 'PUT', body: JSON.stringify(payload) }),
     deleteProfile: (id: string) => request(`/api/profiles/${id}`, { method: 'DELETE' }),
     uploadSession: (profileId: string, data: Buffer): Promise<{ size: number; updatedAt?: string }> =>

@@ -1,10 +1,32 @@
-import { app, BrowserWindow, ipcMain, dialog } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
 import { join } from 'path'
 import { setupEngineHome } from './engine/camoufox/engineHome'
 import { readFile, writeFile, readdir, rm, cp, mkdir } from 'fs/promises'
 import { execFile } from 'child_process'
 import { engineHomeDir } from './engine/camoufox/engineHome'
-import { initCloud, cloudEnabled, cloudAuthed, cloudUser, cloudOfflineMode, doLogin, doRegister, doLogout, cloudPullAndMerge, scheduleCloudPush, cloudMaybeRestoreSession, cloudUploadSession, queueCloudDelete, unqueueCloudDelete, apiUrl as cloudApiUrl, apiUrlFromEnv, cloudClient } from './cloud/cloudMain'
+import {
+  initCloud,
+  cloudEnabled,
+  cloudAuthed,
+  cloudUser,
+  refreshCloudUser,
+  cloudOfflineMode,
+  doLogin,
+  doRegister,
+  doLogout,
+  cloudPullAndMerge,
+  cloudPushNow,
+  scheduleCloudPush,
+  cloudMaybeRestoreSession,
+  cloudUploadSession,
+  queueCloudDelete,
+  unqueueCloudDelete,
+  apiUrl as cloudApiUrl,
+  webUrl as cloudWebUrl,
+  apiUrlFromEnv,
+  unsyncedProfileIds,
+  cloudClient
+} from './cloud/cloudMain'
 import { getProfileDiskInfo, purgeTransientCaches } from './launcher/profileCache'
 import { mkdirSync } from 'fs'
 import { existsSync, readFileSync } from 'fs'
@@ -390,14 +412,16 @@ ipcMain.handle('backup:openFolder', async (_e, id: string) => {
   return dir
 })
 
-// ---------- cloud (TASK 10) ----------
+// ---------- cloud (TASK 10 + Step 1) ----------
 ipcMain.handle('cloud:status', () => ({
   enabled: cloudEnabled(),
   authed: cloudAuthed(),
   user: cloudUser(),
   offlineMode: cloudOfflineMode(),
   apiUrl: cloudApiUrl(),
-  apiUrlFromEnv: apiUrlFromEnv()
+  webUrl: cloudWebUrl(),
+  apiUrlFromEnv: apiUrlFromEnv(),
+  unsyncedProfileIds: unsyncedProfileIds()
 }))
 /** Probe /api/health of a candidate URL without saving it. */
 ipcMain.handle('cloud:testUrl', async (_e, url: string) => {
@@ -424,34 +448,57 @@ ipcMain.handle('cloud:setApiUrl', (_e, url: string) => {
   store.saveSettings({ cloudApiUrl: clean })
   if (changed) doLogout()
   void cloudClient() // rebuilds against the new URL
-  return { apiUrl: cloudApiUrl(), signedOut: changed }
+  return { apiUrl: cloudApiUrl(), webUrl: cloudWebUrl(), signedOut: changed }
 })
-ipcMain.handle('cloud:login', async (_e, email: string, password: string) => {
-  const user = await doLogin(email, password)
-  scheduleCloudPush()
+ipcMain.handle('cloud:login', async (_e, email: string, password: string, totpCode?: string) => {
+  const user = await doLogin(email, password, totpCode)
   const summary = await cloudPullAndMerge()
+  const pushRes = await cloudPushNow()
   push('cloud-event', '', 'synced')
-  return { user, summary }
+  return { user, summary, pushRes, unsyncedProfileIds: unsyncedProfileIds() }
 })
-ipcMain.handle('cloud:register', async (_e, email: string, name: string, password: string) => {
-  const user = await doRegister(email, name, password)
-  scheduleCloudPush()
-  return { user }
+ipcMain.handle('cloud:register', async (_e, email: string, name: string, password: string, username?: string) => {
+  const user = await doRegister(email, name, password, username)
+  const summary = await cloudPullAndMerge()
+  const pushRes = await cloudPushNow()
+  push('cloud-event', '', 'synced')
+  return { user, summary, pushRes, unsyncedProfileIds: unsyncedProfileIds() }
 })
-ipcMain.handle('cloud:logout', () => { doLogout(); return true })
-ipcMain.handle('cloud:offlineMode', (_e, v: boolean) => { store.saveSettings({ cloudOfflineMode: v }); return v })
+ipcMain.handle('cloud:logout', () => {
+  doLogout()
+  push('cloud-event', '', 'logged-out')
+  return true
+})
+ipcMain.handle('cloud:offlineMode', (_e, v: boolean) => {
+  store.saveSettings({ cloudOfflineMode: v })
+  push('cloud-event', '', v ? 'offline' : 'online')
+  return v
+})
 ipcMain.handle('cloud:syncNow', async () => {
+  await refreshCloudUser()
   const pulled = await cloudPullAndMerge()
-  scheduleCloudPush(0)
-  return pulled
+  const pushed = await cloudPushNow()
+  push('cloud-event', '', 'synced')
+  return { pulled, pushed, unsyncedProfileIds: unsyncedProfileIds() }
 })
-ipcMain.handle('profiles:pushNow', () => { scheduleCloudPush(0); return true })
+ipcMain.handle('profiles:pushNow', async () => {
+  await cloudPushNow()
+  return true
+})
 
 // ---------- system ----------
 ipcMain.handle('system:info', () => ({
   apiPort: api?.currentPort ?? null,
   version: app.getVersion()
 }))
+ipcMain.handle('system:openExternal', async (_e, url: string) => {
+  const u = new URL(url)
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new Error('Only http/https URLs are allowed')
+  }
+  await shell.openExternal(u.toString())
+  return true
+})
 
 app.whenReady().then(() => {
   // TASK 9: migrate camoufox engine storage out of ~/Library/Caches (cache
@@ -460,7 +507,11 @@ app.whenReady().then(() => {
   if (engineHome.error) console.error('engine home setup failed:', engineHome.error)
   else if (engineHome.migrated) console.log('engine storage migrated to', engineHomeDir())
 
-  initCloud(store, (id) => !!registry.get(id))
+  initCloud(
+    store,
+    (id) => !!registry.get(id),
+    (status, detail) => push('cloud-event', '', status, detail)
+  )
   applyEngineSetting()
   createWindow()
   // dev-only screenshot hook: REA_SHOT=/path.png captures the renderer and quits
@@ -479,7 +530,13 @@ app.whenReady().then(() => {
     void api.start(settings.automationPort).catch((e) => console.error('API failed:', e))
   }
   if (cloudEnabled() && cloudAuthed()) {
-    void cloudPullAndMerge().then((s) => s && console.log('cloud pull:', JSON.stringify(s.pulled)))
+    void (async () => {
+      await refreshCloudUser()
+      const s = await cloudPullAndMerge()
+      if (s) console.log('cloud pull:', JSON.stringify(s.pulled))
+      await cloudPushNow()
+      push('cloud-event', '', 'synced')
+    })()
   }
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

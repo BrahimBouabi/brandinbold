@@ -13,6 +13,24 @@ export interface PushPayload {
   deleted?: { profiles?: Tombstone[]; groups?: Tombstone[]; proxies?: Tombstone[] }
 }
 
+export interface RejectedProfile {
+  id: string
+  name: string
+  reason: 'quota_exceeded'
+  maxProfiles: number
+}
+
+export interface PushResult {
+  profiles: number
+  groups: number
+  proxies: number
+  deleted: number
+  skipped: number
+  maxProfiles: number
+  activeProfiles: number
+  rejectedProfiles: RejectedProfile[]
+}
+
 /**
  * Pull: live documents + tombstones so other devices can apply deletions.
  * Every document carries the SERVER-side updatedAt the client compares against.
@@ -65,55 +83,49 @@ function dup(kind: string, id: string, e: any): never {
   throw e
 }
 
-/** Push: newer-wins upserts (ownership-aware) + tombstones. Enforces plan limits. */
+/**
+ * Push: newer-wins upserts (ownership-aware) + tombstones.
+ * Fixes BUG-009: never rejects the entire batch when incoming profiles exceed
+ * maxProfiles. Applies tombstones first (freeing slots), updates existing
+ * cloud profiles freely, accepts new profiles up to maxProfiles (pinned first,
+ * then newest updatedAt), syncs all groups/proxies, and reports excess profiles
+ * in `rejectedProfiles`.
+ */
 export async function push(
   userId: string,
   payload: PushPayload,
   maxProfiles: number
-): Promise<{ profiles: number; groups: number; proxies: number; deleted: number; skipped: number }> {
+): Promise<PushResult> {
   const incoming = payload.profiles ?? []
-  if (incoming.length > maxProfiles) {
-    throw Object.assign(
-      new Error(`Plan limit: ${maxProfiles} profiles max on the ${maxProfiles >= 100 ? 'team' : 'free'} plan (${incoming.length} received). Upgrade to sync more.`),
-      { statusCode: 403 }
-    )
+  for (const doc of incoming) assertUuid('profile', doc.id)
+  for (const doc of payload.groups ?? []) assertUuid('group', doc.id)
+  for (const doc of payload.proxies ?? []) assertUuid('proxy', doc.id)
+  for (const kind of ['profiles', 'groups', 'proxies'] as const) {
+    for (const tb of payload.deleted?.[kind] ?? []) {
+      assertUuid(kind.slice(0, -1), tb.id)
+    }
   }
+
   let skipped = 0
 
-  // ---- profiles ----
-  let n = 0
-  for (const doc of incoming) {
-    assertUuid('profile', doc.id)
-    const updatedAt = docTime(doc)
-    // OWNERSHIP-AWARE: a profile id belonging to ANOTHER user is never updated.
-    const [row] = await db
-      .select({ updatedAt: profiles.updatedAt, deletedAt: profiles.deletedAt })
-      .from(profiles)
-      .where(and(eq(profiles.id, doc.id), eq(profiles.userId, userId)))
-    if (!shouldApply(row, updatedAt)) {
-      skipped++
-      continue
+  // ---- 1. tombstones first (frees profile quota slots before new creations) ----
+  let nd = 0
+  const tables = { profiles, groups, proxies } as const
+  for (const kind of ['profiles', 'groups', 'proxies'] as const) {
+    const t = tables[kind]
+    for (const tb of payload.deleted?.[kind] ?? []) {
+      const at = docTime({ updatedAt: tb.deletedAt })
+      const res = await db
+        .update(t)
+        .set({ deletedAt: at })
+        .where(and(eq(t.id, tb.id), eq(t.userId, userId), isNull(t.deletedAt), lte(t.updatedAt, at)))
+      nd += res?.rowCount ?? 0
     }
-    const json = JSON.stringify(doc)
-    if (row) {
-      await db
-        .update(profiles)
-        .set({ name: doc.name ?? 'Unnamed', os: doc.os ?? 'macos', json, updatedAt, deletedAt: null })
-        .where(and(eq(profiles.id, doc.id), eq(profiles.userId, userId)))
-    } else {
-      try {
-        await db.insert(profiles).values({ id: doc.id, userId, name: doc.name ?? 'Unnamed', os: doc.os ?? 'macos', json, updatedAt })
-      } catch (e: any) {
-        dup('Profile', doc.id, e)
-      }
-    }
-    n++
   }
 
-  // ---- groups ----
+  // ---- 2. groups (never blocked by profile limits) ----
   let ng = 0
   for (const doc of payload.groups ?? []) {
-    assertUuid('group', doc.id)
     const updatedAt = docTime(doc)
     const [row] = await db
       .select({ updatedAt: groups.updatedAt, deletedAt: groups.deletedAt })
@@ -136,10 +148,9 @@ export async function push(
     ng++
   }
 
-  // ---- proxies ----
+  // ---- 3. proxies (never blocked by profile limits) ----
   let nx = 0
   for (const doc of payload.proxies ?? []) {
-    assertUuid('proxy', doc.id)
     const updatedAt = docTime(doc)
     const [row] = await db
       .select({ updatedAt: proxies.updatedAt, deletedAt: proxies.deletedAt })
@@ -162,23 +173,97 @@ export async function push(
     nx++
   }
 
-  // ---- tombstones: applied only if the row was not edited AFTER the deletion ----
-  let nd = 0
-  const tables = { profiles, groups, proxies } as const
-  for (const kind of ['profiles', 'groups', 'proxies'] as const) {
-    const t = tables[kind]
-    for (const tb of payload.deleted?.[kind] ?? []) {
-      assertUuid(kind.slice(0, -1), tb.id)
-      const at = docTime({ updatedAt: tb.deletedAt })
-      const res = await db
-        .update(t)
-        .set({ deletedAt: at })
-        .where(and(eq(t.id, tb.id), eq(t.userId, userId), isNull(t.deletedAt), lte(t.updatedAt, at)))
-      nd += res?.rowCount ?? 0
+  // ---- 4. profiles (partial upload with per-item quota_exceeded reporting) ----
+  const existingRows = await db
+    .select({ id: profiles.id, updatedAt: profiles.updatedAt, deletedAt: profiles.deletedAt })
+    .from(profiles)
+    .where(eq(profiles.userId, userId))
+
+  const rowMap = new Map(existingRows.map((r) => [r.id, r]))
+  let activeCount = existingRows.filter((r) => !r.deletedAt).length
+
+  const existingActiveDocs: any[] = []
+  const newOrResurrectedDocs: any[] = []
+
+  for (const doc of incoming) {
+    const row = rowMap.get(doc.id)
+    if (row && !row.deletedAt) {
+      existingActiveDocs.push(doc)
+    } else {
+      newOrResurrectedDocs.push(doc)
     }
   }
 
-  return { profiles: n, groups: ng, proxies: nx, deleted: nd, skipped }
+  // Deterministic order for new profiles: pinned first, then most recently edited
+  newOrResurrectedDocs.sort((a, b) => {
+    const pinDiff = (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0)
+    if (pinDiff !== 0) return pinDiff
+    return docTime(b).getTime() - docTime(a).getTime()
+  })
+
+  let n = 0
+  const rejectedProfiles: RejectedProfile[] = []
+
+  for (const doc of existingActiveDocs) {
+    const row = rowMap.get(doc.id)!
+    const updatedAt = docTime(doc)
+    if (!shouldApply(row, updatedAt)) {
+      skipped++
+      continue
+    }
+    const json = JSON.stringify(doc)
+    await db
+      .update(profiles)
+      .set({ name: doc.name ?? 'Unnamed', os: doc.os ?? 'macos', json, updatedAt, deletedAt: null })
+      .where(and(eq(profiles.id, doc.id), eq(profiles.userId, userId)))
+    rowMap.set(doc.id, { id: doc.id, updatedAt, deletedAt: null })
+    n++
+  }
+
+  for (const doc of newOrResurrectedDocs) {
+    const row = rowMap.get(doc.id)
+    const updatedAt = docTime(doc)
+    if (!shouldApply(row, updatedAt)) {
+      skipped++
+      continue
+    }
+    if (activeCount >= maxProfiles) {
+      rejectedProfiles.push({
+        id: doc.id,
+        name: doc.name ?? 'Unnamed',
+        reason: 'quota_exceeded',
+        maxProfiles
+      })
+      continue
+    }
+    const json = JSON.stringify(doc)
+    if (row) {
+      await db
+        .update(profiles)
+        .set({ name: doc.name ?? 'Unnamed', os: doc.os ?? 'macos', json, updatedAt, deletedAt: null })
+        .where(and(eq(profiles.id, doc.id), eq(profiles.userId, userId)))
+    } else {
+      try {
+        await db.insert(profiles).values({ id: doc.id, userId, name: doc.name ?? 'Unnamed', os: doc.os ?? 'macos', json, updatedAt })
+      } catch (e: any) {
+        dup('Profile', doc.id, e)
+      }
+    }
+    rowMap.set(doc.id, { id: doc.id, updatedAt, deletedAt: null })
+    activeCount++
+    n++
+  }
+
+  return {
+    profiles: n,
+    groups: ng,
+    proxies: nx,
+    deleted: nd,
+    skipped,
+    maxProfiles,
+    activeProfiles: activeCount,
+    rejectedProfiles
+  }
 }
 
 /** Tombstone a profile (pull excludes it; sync push cannot resurrect it unless edited later). */
@@ -210,7 +295,6 @@ export async function putSessionState(userId: string, profileId: string, data: B
   }
   return { size: data.length, updatedAt: updatedAt.toISOString() }
 }
-
 
 export async function getSessionState(userId: string, profileId: string): Promise<Buffer | null> {
   const rows = await db

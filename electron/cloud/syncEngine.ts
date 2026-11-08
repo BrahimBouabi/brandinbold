@@ -2,7 +2,7 @@ import { execFileSync } from 'child_process'
 import { existsSync, mkdirSync, readdirSync, writeFileSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import type { Group, Profile, ProxyEntry } from '@shared/types'
-import type { CloudClient } from './cloudClient'
+import type { CloudClient, CloudPushResponse } from './cloudClient'
 
 /**
  * TASK 10 Étape 2.4 — two-way sync engine.
@@ -147,14 +147,8 @@ export async function pushAll(
   groups: Group[],
   proxies: ProxyEntry[],
   deleted: DeleteQueue
-): Promise<{ profiles: number; groups: number; proxies: number; deleted: number; skipped: number }> {
-  return (await client.push({ profiles, groups, proxies, deleted })) as {
-    profiles: number
-    groups: number
-    proxies: number
-    deleted: number
-    skipped: number
-  }
+): Promise<CloudPushResponse> {
+  return await client.push({ profiles, groups, proxies, deleted })
 }
 
 /** Pack the vital session files of a stopped profile into a gzip tar buffer. */

@@ -80,21 +80,32 @@ const api = {
   },
   system: {
     info: (): Promise<{ apiPort: number | null; version: string }> =>
-      ipcRenderer.invoke('system:info')
+      ipcRenderer.invoke('system:info'),
+    openExternal: (url: string): Promise<boolean> => ipcRenderer.invoke('system:openExternal', url)
   },
   cloud: {
-    status: (): Promise<{ enabled: boolean; authed: boolean; user: any; offlineMode: boolean; apiUrl: string; apiUrlFromEnv: boolean }> =>
-      ipcRenderer.invoke('cloud:status'),
-    login: (email: string, password: string): Promise<any> => ipcRenderer.invoke('cloud:login', email, password),
-    register: (email: string, name: string, password: string): Promise<any> =>
-      ipcRenderer.invoke('cloud:register', email, name, password),
+    status: (): Promise<{
+      enabled: boolean
+      authed: boolean
+      user: any
+      offlineMode: boolean
+      apiUrl: string
+      webUrl: string
+      apiUrlFromEnv: boolean
+      unsyncedProfileIds: string[]
+    }> => ipcRenderer.invoke('cloud:status'),
+    login: (email: string, password: string, totpCode?: string): Promise<any> =>
+      ipcRenderer.invoke('cloud:login', email, password, totpCode),
+    register: (email: string, name: string, password: string, username?: string): Promise<any> =>
+      ipcRenderer.invoke('cloud:register', email, name, password, username),
     logout: (): Promise<boolean> => ipcRenderer.invoke('cloud:logout'),
     setOfflineMode: (v: boolean): Promise<boolean> => ipcRenderer.invoke('cloud:offlineMode', v),
     syncNow: (): Promise<any> => ipcRenderer.invoke('cloud:syncNow'),
     pushNow: (): Promise<boolean> => ipcRenderer.invoke('profiles:pushNow'),
     testUrl: (url: string): Promise<{ ok: boolean; app?: string; version?: string; error?: string }> =>
       ipcRenderer.invoke('cloud:testUrl', url),
-    setApiUrl: (url: string): Promise<{ apiUrl: string; signedOut: boolean }> => ipcRenderer.invoke('cloud:setApiUrl', url)
+    setApiUrl: (url: string): Promise<{ apiUrl: string; webUrl: string; signedOut: boolean }> =>
+      ipcRenderer.invoke('cloud:setApiUrl', url)
   },
   onProfileEvent: (cb: (event: any) => void) => {
     const listener = (_e: unknown, event: any) => cb(event)

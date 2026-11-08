@@ -35,29 +35,47 @@ function Logo({ collapsed }: { collapsed: boolean }) {
 }
 
 function PlanCard() {
-  const { t } = useTranslation()
-  const { profiles, settings } = useApp()
-  const [cloudUser, setCloudUser] = useState<{ plan: string; maxProfiles: number } | null>(null)
-  useEffect(() => {
-    void (window as any).rea.cloud.status().then((s: any) => {
-      if (s.authed && s.user) setCloudUser({ plan: s.user.plan, maxProfiles: s.user.maxProfiles })
-    })
-  }, [])
-  const max = cloudUser?.maxProfiles ?? settings.maxProfiles ?? 3
-  const planName = cloudUser?.plan ?? 'local'
-  const used = Math.min(profiles.length, max)
-  const pct = Math.min(100, Math.round((used / max) * 100))
+  const { profiles, settings, cloudStatus, openAuthGate } = useApp()
+  const authed = !!cloudStatus?.authed && !!cloudStatus?.user
+  const max = authed ? (cloudStatus!.user!.maxProfiles ?? 3) : (settings.maxProfiles ?? 3)
+  const planName = authed ? cloudStatus!.user!.plan : 'local'
+  const unsyncedCount = authed ? (cloudStatus?.unsyncedProfileIds?.length ?? 0) : 0
+  const syncedCount = authed ? Math.min(max, Math.max(0, profiles.length - unsyncedCount)) : Math.min(profiles.length, max)
+  const pct = Math.min(100, Math.round((syncedCount / Math.max(1, max)) * 100))
+
+  const onAction = () => {
+    if (!authed) {
+      openAuthGate()
+      return
+    }
+    const url = cloudStatus?.webUrl || 'https://cloud-web-production-f49c.up.railway.app'
+    void rea.system.openExternal(url)
+  }
+
   return (
     <div style={{ margin: '10px 10px 8px', padding: '12px', borderRadius: 12, border: '1px solid rgba(137,82,239,0.25)', background: 'rgba(137,82,239,0.06)' }}>
       <div style={{ height: 4, borderRadius: 2, background: 'rgba(137,82,239,0.2)', marginBottom: 10 }}>
         <div style={{ width: `${pct}%`, height: 4, borderRadius: 2, background: '#8952ef' }} />
       </div>
-      <div style={{ fontWeight: 700, fontSize: 13, textTransform: 'capitalize' }}>{planName} plan</div>
-      <div style={{ fontSize: 12, opacity: 0.65, margin: '3px 0 9px' }}>
-        {profiles.length} of {max} profiles used
+      <div style={{ fontWeight: 700, fontSize: 13, textTransform: 'capitalize' }}>
+        {authed ? `${planName} plan` : 'Offline mode'}
       </div>
-      <button className="upgrade-btn" style={{ width: '100%', borderRadius: 8, border: '1px solid rgba(137,82,239,0.5)', background: 'transparent', color: '#8952ef', fontWeight: 600, padding: '6px 0', cursor: 'pointer' }}>
-        ♛ Upgrade now
+      <div style={{ fontSize: 12, opacity: 0.65, margin: '3px 0 9px' }}>
+        {authed ? (
+          <>
+            {syncedCount} of {max} cloud profiles
+            {unsyncedCount > 0 ? ` (+${unsyncedCount} local)` : ''}
+          </>
+        ) : (
+          `${profiles.length} local profile${profiles.length === 1 ? '' : 's'}`
+        )}
+      </div>
+      <button
+        onClick={onAction}
+        className="upgrade-btn"
+        style={{ width: '100%', borderRadius: 8, border: '1px solid rgba(137,82,239,0.5)', background: 'transparent', color: '#8952ef', fontWeight: 600, padding: '6px 0', cursor: 'pointer' }}
+      >
+        {authed ? '♛ Manage plan' : '☁ Sign in to Cloud'}
       </button>
     </div>
   )
@@ -65,20 +83,24 @@ function PlanCard() {
 
 function UserBlock({ collapsed }: { collapsed: boolean }) {
   const { t } = useTranslation()
-  const { settings, refresh } = useApp()
+  const { settings, cloudStatus, openAuthGate, refresh } = useApp()
   const [langOpen, setLangOpen] = useState(false)
-  const [cloud, setCloud] = useState<{ user: any; authed: boolean; offlineMode: boolean } | null>(null)
 
-  useEffect(() => {
-    void (window as any).rea.cloud.status().then(setCloud)
-  }, [])
+  const openManageAccount = () => {
+    const url = cloudStatus?.webUrl || 'https://cloud-web-production-f49c.up.railway.app'
+    void rea.system.openExternal(url)
+  }
 
   const doLogout = async () => {
-    await (window as any).rea.cloud.logout()
-    window.location.reload()
+    await rea.cloud.logout()
+    await refresh.cloud()
+    openAuthGate()
   }
-  const user = cloud?.user ?? settings.user ?? { name: 'Local User', email: '' }
-  const authed = !!cloud?.authed
+
+  const authed = !!cloudStatus?.authed && !!cloudStatus?.user
+  const user = authed
+    ? cloudStatus!.user!
+    : (settings.user ?? { name: 'Local User', email: 'local@brandinbold.app' })
   const initial = (user.name || 'U').charAt(0).toUpperCase()
 
   const setLang = async (code: string) => {
@@ -88,7 +110,29 @@ function UserBlock({ collapsed }: { collapsed: boolean }) {
 
   const menu = (
     <div style={{ minWidth: 230 }}>
-      <MenuRow icon={<UserOutlined />} label={t('common.myProfile')} />
+      <MenuRow
+        icon={<UserOutlined />}
+        label="Manage account"
+        right={<span style={{ opacity: 0.5, fontSize: 11 }}>↗</span>}
+        onClick={openManageAccount}
+      />
+      {authed ? (
+        <MenuRow
+          icon={<ReloadOutlined />}
+          label="Sync cloud now"
+          onClick={async () => {
+            await rea.cloud.syncNow()
+            await refresh.all()
+            message.success('Cloud synced')
+          }}
+        />
+      ) : (
+        <MenuRow
+          icon={<UserOutlined />}
+          label="Sign in to Cloud"
+          onClick={() => openAuthGate()}
+        />
+      )}
       <MenuRow
         icon={<GlobalOutlined />}
         label={t('common.language')}
@@ -109,11 +153,15 @@ function UserBlock({ collapsed }: { collapsed: boolean }) {
         </div>
       )}
       <ThemeRow />
-      <MenuRow icon={<QuestionCircleOutlined />} label={t('common.helpSupport')} />
+      <MenuRow icon={<QuestionCircleOutlined />} label={t('common.helpSupport')} onClick={openManageAccount} />
       <MenuRow icon={<AppstoreOutlined />} label={t('common.checkForUpdates')} onClick={() => message.info(t('common.upToDate'))} />
       <MenuRow icon={<ReloadOutlined />} label={t('common.reinstallBrowser')} onClick={() => void rea.engine.install()} />
       <div style={{ height: 1, background: 'rgba(128,128,128,0.2)', margin: '6px 0' }} />
-      <MenuRow icon={<LogoutOutlined />} label={t('common.logout')} onClick={() => void doLogout()} />
+      {authed ? (
+        <MenuRow icon={<LogoutOutlined />} label={t('common.logout')} onClick={() => void doLogout()} />
+      ) : (
+        <MenuRow icon={<UserOutlined />} label="Sign in to Cloud" onClick={() => openAuthGate()} />
+      )}
     </div>
   )
 

@@ -49,10 +49,15 @@ function ProfileStorageRow({ onDone }: { onDone: (freedBytes: number) => void })
 
 export function SettingsPage() {
   const { t } = useTranslation()
-  const { settings, refresh } = useApp()
+  const { settings, cloudStatus, openAuthGate, refresh } = useApp()
   const save = async (patch: Partial<AppSettings>) => {
     await refresh.settings(patch)
     message.success(t('settings.saved'))
+  }
+
+  const openDashboard = () => {
+    const url = cloudStatus?.webUrl || 'https://cloud-web-production-f49c.up.railway.app'
+    void rea.system.openExternal(url)
   }
 
   const Row = ({ label, children, wide }: { label: string; children: React.ReactNode; wide?: boolean }) => (
@@ -69,29 +74,93 @@ export function SettingsPage() {
     </div>
   )
 
+  const authed = !!cloudStatus?.authed && !!cloudStatus?.user
+  const cu = cloudStatus?.user
+
   const tabItems = [
     {
       key: 'details',
       label: t('settings.details'),
       children: (
         <div>
+          <Row label="Cloud account">
+            {authed && cu ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: 13 }}>
+                  <b>{cu.name}</b>{' '}
+                  {cu.username && <span style={{ color: '#8952ef' }}>@{cu.username}</span>}
+                  <div style={{ opacity: 0.7, fontSize: 12 }}>{cu.email} · {cu.plan.toUpperCase()} plan ({cu.maxProfiles} cloud profiles max)</div>
+                </div>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  <Button type="primary" onClick={openDashboard}>
+                    Manage account in Web Dashboard ↗
+                  </Button>
+                  <Button
+                    onClick={async () => {
+                      await rea.cloud.syncNow()
+                      await refresh.all()
+                      message.success('Cloud synced')
+                    }}
+                  >
+                    Sync now
+                  </Button>
+                  <Button
+                    danger
+                    onClick={async () => {
+                      await rea.cloud.logout()
+                      await refresh.cloud()
+                      openAuthGate()
+                    }}
+                  >
+                    Sign Out
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div style={{ fontSize: 13, opacity: 0.75 }}>
+                  Running in Local Offline Mode. Sign in to sync your profiles, groups, proxies, and sessions with the cloud.
+                </div>
+                <div style={{ display: 'flex', gap: 10 }}>
+                  <Button type="primary" onClick={() => openAuthGate()}>
+                    Sign in to Cloud
+                  </Button>
+                  <Button onClick={openDashboard}>
+                    Open Web Dashboard ↗
+                  </Button>
+                </div>
+              </div>
+            )}
+          </Row>
           <Row label={t('settings.username')}>
             <Input
-              value={settings.user?.name}
+              value={authed && cu ? (cu.username || cu.name) : settings.user?.name}
+              disabled={authed}
               onChange={(e) => void save({ user: { ...settings.user, name: e.target.value } })}
             />
           </Row>
           <Row label={t('settings.email')}>
             <Input
-              value={settings.user?.email}
+              value={authed && cu ? cu.email : settings.user?.email}
+              disabled={authed}
               onChange={(e) => void save({ user: { ...settings.user, email: e.target.value } })}
             />
           </Row>
           <Row label={t('settings.changePassword')}>
-            <Button disabled>Local account — no password</Button>
+            <Button onClick={openDashboard}>
+              Change password in Web Dashboard ↗
+            </Button>
           </Row>
           <Row label={t('settings.twoFa')}>
-            <Switch size="small" disabled />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <Switch size="small" checked={!!cu?.totpEnabled} onChange={openDashboard} />
+              <span style={{ fontSize: 12.5, opacity: 0.75 }}>
+                {cu?.totpEnabled ? 'Authenticator 2FA is enabled' : 'Configure TOTP Authenticator & backup codes in Web Dashboard'}
+              </span>
+              <Button size="small" onClick={openDashboard}>
+                Configure 2FA ↗
+              </Button>
+            </div>
           </Row>
         </div>
       )

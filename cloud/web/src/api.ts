@@ -1,11 +1,18 @@
-const BASE = (import.meta.env?.VITE_API_URL as string) ?? 'http://localhost:8787'
+const DEFAULT_API =
+  typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    ? 'http://localhost:8787'
+    : 'https://cloud-api-production-8852.up.railway.app'
+
+const BASE = ((import.meta.env?.VITE_API_URL as string) || DEFAULT_API).replace(/\/+$/, '')
 
 export interface CloudUser {
   id: string
   email: string
+  username?: string
   name: string
   plan: string
   maxProfiles: number
+  totpEnabled?: boolean
 }
 
 export function token(): string | null {
@@ -43,21 +50,33 @@ async function request(path: string, options: RequestInit = {}, auth = true): Pr
   const ct = res.headers.get('content-type') ?? ''
   const body = ct.includes('json') ? await res.json() : await res.arrayBuffer()
   if (!res.ok) {
-    const err = typeof body === 'object' && body && 'error' in (body as any) ? (body as any).error : `HTTP ${res.status}`
-    throw Object.assign(new Error(err), { statusCode: res.status })
+    const errObj = typeof body === 'object' && body ? (body as Record<string, any>) : {}
+    const msg = typeof errObj.error === 'string' ? errObj.error : `HTTP ${res.status}`
+    throw Object.assign(new Error(msg), {
+      statusCode: res.status,
+      totpRequired: !!errObj.totpRequired
+    })
   }
   return body
 }
 
 export const api = {
   health: () => request('/api/health', {}, false),
-  register: (email: string, name: string, password: string) =>
-    request('/api/auth/register', { method: 'POST', body: JSON.stringify({ email, name, password }) }, false),
-  login: (email: string, password: string) =>
-    request('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }, false),
+  register: (email: string, name: string, password: string, username?: string) =>
+    request('/api/auth/register', { method: 'POST', body: JSON.stringify({ email, name, password, username }) }, false),
+  login: (email: string, password: string, totpCode?: string) =>
+    request('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password, totpCode }) }, false),
   me: () => request('/api/auth/me'),
   updateName: (name: string) => request('/api/auth/me', { method: 'PATCH', body: JSON.stringify({ name }) }),
+  updateProfile: (patch: { name?: string; username?: string }) =>
+    request('/api/auth/me', { method: 'PATCH', body: JSON.stringify(patch) }),
   changePassword: (currentPassword: string, newPassword: string) =>
     request('/api/auth/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, newPassword }) }),
+  setup2fa: (): Promise<{ secret: string; otpauthUrl: string }> =>
+    request('/api/auth/2fa/setup', { method: 'POST', body: '{}' }),
+  enable2fa: (code: string): Promise<{ enabled: boolean; backupCodes: string[] }> =>
+    request('/api/auth/2fa/enable', { method: 'POST', body: JSON.stringify({ code }) }),
+  disable2fa: (payload: { password?: string; code?: string }): Promise<{ enabled: boolean }> =>
+    request('/api/auth/2fa/disable', { method: 'POST', body: JSON.stringify(payload) }),
   pull: () => request('/api/sync/pull')
 }

@@ -6,15 +6,19 @@ import { api, setAuth } from '../api'
 export function Login({ onNav, onAuthed }: { onNav: (r: string) => void; onAuthed: () => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [needsTotp, setNeedsTotp] = useState(false)
 
-  const submit = async (v: { email: string; password: string }) => {
+  const submit = async (v: { email: string; password: string; totpCode?: string }) => {
     setBusy(true)
     setError('')
     try {
-      const res = await api.login(v.email, v.password)
+      const res = await api.login(v.email, v.password, v.totpCode)
       setAuth(res.token, res.user)
       onAuthed()
     } catch (e: any) {
+      if (e.totpRequired) {
+        setNeedsTotp(true)
+      }
       setError(e.message)
     } finally {
       setBusy(false)
@@ -24,15 +28,24 @@ export function Login({ onNav, onAuthed }: { onNav: (r: string) => void; onAuthe
   return (
     <AuthShell title="Sign In" onNav={onNav}>
       <Form layout="vertical" onFinish={submit} disabled={busy}>
-        <Form.Item name="email" rules={[{ required: true, message: 'Email required' }]}>
-          <Input placeholder="Email" size="large" />
+        <Form.Item name="email" rules={[{ required: true, message: 'Email or username required' }]}>
+          <Input placeholder="Email or username" size="large" />
         </Form.Item>
         <Form.Item name="password" rules={[{ required: true, message: 'Password required' }]}>
           <Input.Password placeholder="Password" size="large" />
         </Form.Item>
+        {needsTotp && (
+          <Form.Item
+            name="totpCode"
+            label={<span style={{ color: '#d7dbe2', fontSize: 12.5 }}>Authenticator 2FA Code (or Backup Code)</span>}
+            rules={[{ required: true, message: 'Enter your 6-digit 2FA code or backup code' }]}
+          >
+            <Input placeholder="123456 or XXXX-XXXX" size="large" autoFocus />
+          </Form.Item>
+        )}
         {error ? <Typography.Text type="danger" style={{ fontSize: 12.5 }}>{error}</Typography.Text> : null}
         <Button type="primary" htmlType="submit" block size="large" style={{ marginTop: 10 }} loading={busy}>
-          Sign In
+          {needsTotp ? 'Verify & Sign In' : 'Sign In'}
         </Button>
       </Form>
       <div style={{ textAlign: 'center', marginTop: 16, fontSize: 13 }}>
@@ -47,7 +60,7 @@ export function Register({ onNav, onAuthed }: { onNav: (r: string) => void; onAu
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
-  const submit = async (v: { email: string; name: string; password: string; confirm: string }) => {
+  const submit = async (v: { email: string; name: string; username?: string; password: string; confirm: string }) => {
     if (v.password !== v.confirm) {
       setError('Passwords do not match')
       return
@@ -55,7 +68,7 @@ export function Register({ onNav, onAuthed }: { onNav: (r: string) => void; onAu
     setBusy(true)
     setError('')
     try {
-      const res = await api.register(v.email, v.name, v.password)
+      const res = await api.register(v.email, v.name, v.password, v.username)
       setAuth(res.token, res.user)
       onAuthed()
     } catch (e: any) {
@@ -70,6 +83,9 @@ export function Register({ onNav, onAuthed }: { onNav: (r: string) => void; onAu
       <Form layout="vertical" onFinish={submit} disabled={busy}>
         <Form.Item name="name" rules={[{ required: true, message: 'Name required' }]}>
           <Input placeholder="Your name" size="large" />
+        </Form.Item>
+        <Form.Item name="username">
+          <Input placeholder="Username (optional, e.g. alex_b)" size="large" />
         </Form.Item>
         <Form.Item name="email" rules={[{ required: true, type: 'email', message: 'Valid email required' }]}>
           <Input placeholder="Email" size="large" />

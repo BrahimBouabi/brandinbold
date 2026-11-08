@@ -8,10 +8,14 @@ export const bytea = customType<{ data: Buffer; driverData: Buffer }>({
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
   email: text('email').notNull().unique(),
+  username: text('username').unique(),
   name: text('name').notNull(),
   passwordHash: text('password_hash').notNull(),
   plan: text('plan').notNull().default('free'), // 'free' | 'pro' | 'team'
   maxProfiles: integer('max_profiles').notNull().default(3),
+  totpSecret: text('totp_secret'),
+  totpEnabled: boolean('totp_enabled').notNull().default(false),
+  totpBackupCodes: text('totp_backup_codes'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 })
 

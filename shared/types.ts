@@ -273,7 +273,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   maxBackups: 10,
   maxBackupSizeMb: 100,
   user: { name: 'Local User', email: 'local@brandinbold.app' },
-  cloudApiUrl: 'http://localhost:8787',
+  cloudApiUrl: 'https://cloud-api-production-8852.up.railway.app',
   cloudOfflineMode: false
 }
 

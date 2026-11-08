@@ -1,4 +1,4 @@
-import { ConfigProvider, theme as antdTheme } from 'antd'
+import { ConfigProvider, message, theme as antdTheme } from 'antd'
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { AppSettings, Group, Profile, ProfileStatus, ProxyEntry } from '@shared/types'
@@ -16,6 +16,25 @@ import { TrashPage } from './pages/TrashPage'
 
 const rea = (window as any).rea
 
+export interface CloudStatusState {
+  enabled: boolean
+  authed: boolean
+  user: {
+    id: string
+    email: string
+    username?: string
+    name: string
+    plan: string
+    maxProfiles: number
+    totpEnabled?: boolean
+  } | null
+  offlineMode: boolean
+  apiUrl: string
+  webUrl: string
+  apiUrlFromEnv: boolean
+  unsyncedProfileIds: string[]
+}
+
 export interface AppState {
   profiles: Profile[]
   deleted: Profile[]
@@ -24,12 +43,15 @@ export interface AppState {
   settings: AppSettings
   statuses: Record<string, ProfileStatus>
   apiPort: number | null
+  cloudStatus: CloudStatusState | null
+  openAuthGate: () => void
   refresh: {
     profiles: () => Promise<void>
     groups: () => Promise<void>
     proxies: () => Promise<void>
     settings: (patch?: Partial<AppSettings>) => Promise<void>
     statuses: (id?: string) => Promise<void>
+    cloud: () => Promise<CloudStatusState | null>
     all: () => Promise<void>
   }
 }
@@ -47,6 +69,7 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [statuses, setStatuses] = useState<Record<string, ProfileStatus>>({})
   const [apiPort, setApiPort] = useState<number | null>(null)
+  const [cloudStatus, setCloudStatus] = useState<CloudStatusState | null>(null)
   const [authState, setAuthState] = useState<'checking' | 'gate' | 'ready'>('checking')
   const [systemDark, setSystemDark] = useState<boolean>(
     window.matchMedia('(prefers-color-scheme: dark)').matches
@@ -72,6 +95,12 @@ export default function App() {
     if (patch?.language) void (await import('./i18n')).default.changeLanguage(patch.language)
   }, [])
 
+  const refreshCloud = useCallback(async () => {
+    const st = (await rea.cloud.status?.()) ?? null
+    setCloudStatus(st)
+    return st as CloudStatusState | null
+  }, [])
+
   const refreshStatuses = useCallback(async (id?: string) => {
     if (id && rea.status) {
       const res = await rea.status(id)
@@ -93,24 +122,50 @@ export default function App() {
   }, [])
 
   const refreshAll = useCallback(async () => {
-    await Promise.all([refreshProfiles(), refreshGroups(), refreshProxies(), refreshSettings(), refreshStatuses()])
+    const [, , , , , cloudSt] = await Promise.all([
+      refreshProfiles(),
+      refreshGroups(),
+      refreshProxies(),
+      refreshSettings(),
+      refreshStatuses(),
+      refreshCloud()
+    ])
     const info = await rea.system.info()
     setApiPort(info.apiPort)
     const s = await rea.settings.get()
     void (await import('./i18n')).default.changeLanguage(s.language)
-  }, [refreshProfiles, refreshGroups, refreshProxies, refreshSettings, refreshStatuses])
+    setAuthState((prev) => {
+      if (prev !== 'checking') return prev
+      const isPreview = new URLSearchParams(window.location.search).size > 0
+      if (isPreview) return 'ready'
+      if (cloudSt && !cloudSt.authed && !cloudSt.offlineMode) return 'gate'
+      return 'ready'
+    })
+  }, [refreshProfiles, refreshGroups, refreshProxies, refreshSettings, refreshStatuses, refreshCloud])
 
   useEffect(() => {
     const qp = new URLSearchParams(window.location.search)
     const qTheme = qp.get('theme') as any
-    if (qTheme) setSettings((s) => ({ ...(s ?? {} as any), theme: qTheme }))
+    if (qTheme) setSettings((s) => ({ ...(s ?? ({} as any)), theme: qTheme }))
     void refreshAll()
     return rea.onProfileEvent((event: any) => {
       if (event.type === 'status' && event.profileId) {
         setStatuses((s) => ({ ...s, [event.profileId]: event.status as ProfileStatus }))
+      } else if (event.type === 'cloud-event') {
+        void Promise.all([refreshCloud(), refreshProfiles(), refreshGroups(), refreshProxies()])
+        if (event.status === 'quota-warning' && event.detail) {
+          message.warning(event.detail, 5)
+        }
       }
     })
-  }, [refreshAll])
+  }, [refreshAll, refreshCloud, refreshProfiles, refreshGroups, refreshProxies])
+
+  const openAuthGate = useCallback(() => {
+    void rea.cloud.setOfflineMode(false).then(() => {
+      void refreshCloud()
+      setAuthState('gate')
+    })
+  }, [refreshCloud])
 
   const isDark =
     settings?.theme === 'dark' || (settings?.theme === 'system' && systemDark)
@@ -124,16 +179,36 @@ export default function App() {
       settings: settings ?? ({} as AppSettings),
       statuses,
       apiPort,
+      cloudStatus,
+      openAuthGate,
       refresh: {
         profiles: refreshProfiles,
         groups: refreshGroups,
         proxies: refreshProxies,
         settings: refreshSettings,
         statuses: refreshStatuses,
+        cloud: refreshCloud,
         all: refreshAll
       }
     }),
-    [profiles, deleted, groups, proxies, settings, statuses, apiPort, refreshProfiles, refreshGroups, refreshProxies, refreshSettings, refreshStatuses, refreshAll]
+    [
+      profiles,
+      deleted,
+      groups,
+      proxies,
+      settings,
+      statuses,
+      apiPort,
+      cloudStatus,
+      openAuthGate,
+      refreshProfiles,
+      refreshGroups,
+      refreshProxies,
+      refreshSettings,
+      refreshStatuses,
+      refreshCloud,
+      refreshAll
+    ]
   )
 
   if (authState === 'gate') {

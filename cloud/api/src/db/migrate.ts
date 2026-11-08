@@ -57,4 +57,11 @@ ALTER TABLE groups ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFA
 ALTER TABLE groups ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
 ALTER TABLE proxies ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now();
 ALTER TABLE proxies ADD COLUMN IF NOT EXISTS deleted_at timestamptz;
+
+-- Step 1: username + TOTP 2FA on users (idempotent)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS username text;
+CREATE UNIQUE INDEX IF NOT EXISTS users_username_idx ON users(username) WHERE username IS NOT NULL;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled boolean NOT NULL DEFAULT false;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_backup_codes text;
 `

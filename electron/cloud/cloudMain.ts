@@ -1,9 +1,10 @@
-import { createCloudClient, type CloudClient, type CloudUser } from './cloudClient'
+import { createCloudClient, type CloudClient, type CloudPushResponse, type CloudUser } from './cloudClient'
 import { pullAndMerge, uploadSessionState, maybeRestoreSession, pushAll, type DeleteQueue, type SyncSummary } from './syncEngine'
+import { DEFAULT_CLOUD_API_URL, resolveDashboardUrl } from '@shared/config'
 import type { ProfileStore } from '../store/db'
 
 /**
- * Cloud wiring (TASK 10 Étape 2.4): tokens live in the local settings KV,
+ * Cloud wiring (TASK 10 Étape 2.4 + Step 1): tokens live in the local settings KV,
  * client + sync engine are created lazily, mutations push with a debounce,
  * session archives roam via upload-on-stop / restore-on-launch.
  */
@@ -13,12 +14,17 @@ let clientUrl = ''
 let store: ProfileStore | null = null
 let pushTimer: ReturnType<typeof setTimeout> | null = null
 let syncing = false
+let onCloudEvent: ((status: string, detail?: string) => void) | null = null
 
 /** Env override (packaged builds / CI) wins over Settings; trailing slashes stripped. */
 export function apiUrl(): string {
   const env = process.env.BRANDINBOLD_CLOUD_API_URL ?? process.env.Brandinbold_CLOUD_API_URL
-  const url = (env || store?.getSettings().cloudApiUrl || 'http://localhost:8787').trim()
+  const url = (env || store?.getSettings().cloudApiUrl || DEFAULT_CLOUD_API_URL).trim()
   return url.replace(/\/+$/, '')
+}
+
+export function webUrl(): string {
+  return resolveDashboardUrl(apiUrl())
 }
 
 export function apiUrlFromEnv(): boolean {
@@ -27,13 +33,28 @@ export function apiUrlFromEnv(): boolean {
 
 let isRunning: (id: string) => boolean = () => false
 
-export function initCloud(storeRef: ProfileStore, isRunningFn?: (id: string) => boolean): void {
+export function initCloud(
+  storeRef: ProfileStore,
+  isRunningFn?: (id: string) => boolean,
+  onEventFn?: (status: string, detail?: string) => void
+): void {
   store = storeRef
   if (isRunningFn) isRunning = isRunningFn
+  if (onEventFn) onCloudEvent = onEventFn
+
+  // One-time migration: upgrade untouched legacy localhost default to production Railway URL
+  if (!store.getSetting('cloud_url_migrated_v1')) {
+    const currentUrl = store.getSettings().cloudApiUrl
+    if (!store.getSetting('cloud_token') && (!currentUrl || currentUrl === 'http://localhost:8787')) {
+      store.saveSettings({ cloudApiUrl: DEFAULT_CLOUD_API_URL })
+    }
+    store.setSetting('cloud_url_migrated_v1', '1')
+  }
 }
 
 // ---------- offline delete queue (Step B) ----------
 const QUEUE_KEY = 'cloud_pending_deletes'
+const UNSYNCED_KEY = 'cloud_unsynced_profile_ids'
 type Kind = keyof DeleteQueue
 
 function readQueue(): DeleteQueue {
@@ -47,6 +68,19 @@ function readQueue(): DeleteQueue {
 
 function writeQueue(q: DeleteQueue): void {
   store?.setSetting(QUEUE_KEY, JSON.stringify(q))
+}
+
+export function unsyncedProfileIds(): string[] {
+  try {
+    const raw = store?.getSetting(UNSYNCED_KEY)
+    return raw ? (JSON.parse(raw) as string[]) : []
+  } catch {
+    return []
+  }
+}
+
+function setUnsyncedProfileIds(ids: string[]): void {
+  store?.setSetting(UNSYNCED_KEY, JSON.stringify(ids))
 }
 
 /** Record a local deletion; survives restarts until the server acknowledges it. */
@@ -113,6 +147,20 @@ export function cloudUser(): CloudUser | null {
   }
 }
 
+export async function refreshCloudUser(): Promise<CloudUser | null> {
+  if (!cloudEnabled() || !cloudAuthed()) return null
+  try {
+    const res = await cloudClient().me()
+    if (res?.user) {
+      store?.setSetting('cloud_user', JSON.stringify(res.user))
+      return res.user
+    }
+  } catch {
+    /* ignore network error */
+  }
+  return cloudUser()
+}
+
 export function cloudOfflineMode(): boolean {
   return store?.getSettings().cloudOfflineMode === true
 }
@@ -121,14 +169,16 @@ export function cloudEnabled(): boolean {
   return !cloudOfflineMode() && !!apiUrl()
 }
 
-export async function doLogin(email: string, password: string): Promise<CloudUser> {
-  const res = await cloudClient().login(email, password)
+export async function doLogin(email: string, password: string, totpCode?: string): Promise<CloudUser> {
+  const res = await cloudClient().login(email, password, totpCode)
+  store?.saveSettings({ cloudOfflineMode: false })
   store?.setSetting('cloud_user', JSON.stringify(res.user))
   return res.user
 }
 
-export async function doRegister(email: string, name: string, password: string): Promise<CloudUser> {
-  const res = await cloudClient().register(email, name, password)
+export async function doRegister(email: string, name: string, password: string, username?: string): Promise<CloudUser> {
+  const res = await cloudClient().register(email, name, password, username)
+  store?.saveSettings({ cloudOfflineMode: false })
   store?.setSetting('cloud_user', JSON.stringify(res.user))
   return res.user
 }
@@ -139,7 +189,9 @@ export function doLogout(): void {
   pushTimer = null
   cloudClient().logout()
   store?.setSetting('cloud_user', '')
+  setUnsyncedProfileIds([])
   writeQueue({ profiles: [], groups: [], proxies: [] })
+  onCloudEvent?.('logged-out')
 }
 
 /** Pull remote → merge local (newer updatedAt wins). Called on login/start. */
@@ -167,25 +219,45 @@ export async function cloudPullAndMerge(): Promise<SyncSummary | null> {
   }
 }
 
+/** Immediate push (awaitable on login / manual sync). */
+export async function cloudPushNow(): Promise<CloudPushResponse | null> {
+  if (!store || !cloudEnabled() || !cloudAuthed()) return null
+  if (pushTimer) {
+    clearTimeout(pushTimer)
+    pushTimer = null
+  }
+  while (syncing) {
+    await new Promise((r) => setTimeout(r, 100))
+  }
+  syncing = true
+  try {
+    const sent = readQueue()
+    const res = await pushAll(cloudClient(), store.list(), store.listGroups(), store.listProxies(), sent)
+    ackQueue(sent)
+    const rejectedIds = (res.rejectedProfiles ?? []).map((r) => r.id)
+    setUnsyncedProfileIds(rejectedIds)
+    if (rejectedIds.length > 0) {
+      onCloudEvent?.(
+        'quota-warning',
+        `${rejectedIds.length} profile(s) kept local-only (plan limit: ${res.maxProfiles ?? 3} cloud profiles)`
+      )
+    } else {
+      onCloudEvent?.('synced')
+    }
+    return res
+  } catch {
+    return null
+  } finally {
+    syncing = false
+  }
+}
+
 /** Push the full local state (debounced, offline-safe). */
 export function scheduleCloudPush(delayMs = 1500): void {
   if (!cloudEnabled() || !cloudAuthed()) return
   if (pushTimer) clearTimeout(pushTimer)
   pushTimer = setTimeout(() => {
-    void (async () => {
-      if (!store) return
-      if (syncing) return scheduleCloudPush(1000) // a pull is running: retry instead of dropping the change
-      syncing = true
-      try {
-        const sent = readQueue()
-        await pushAll(cloudClient(), store.list(), store.listGroups(), store.listProxies(), sent)
-        ackQueue(sent)
-      } catch {
-        /* offline — queue kept, retried on next mutation or app start */
-      } finally {
-        syncing = false
-      }
-    })()
+    void cloudPushNow()
   }, delayMs)
 }
 
