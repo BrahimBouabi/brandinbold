@@ -64,4 +64,41 @@ CREATE UNIQUE INDEX IF NOT EXISTS users_username_idx ON users(username) WHERE us
 ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled boolean NOT NULL DEFAULT false;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_backup_codes text;
+
+-- Step 5: Team management (members, expiring invites, roles, activity audit log)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS active_team_owner_id uuid REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at timestamptz;
+
+CREATE TABLE IF NOT EXISTS team_members (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  member_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  email text NOT NULL,
+  role text NOT NULL DEFAULT 'member',
+  status text NOT NULL DEFAULT 'pending',
+  invite_token text,
+  invite_expires_at timestamptz,
+  invited_by_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  joined_at timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS team_members_owner_idx ON team_members(owner_id);
+CREATE INDEX IF NOT EXISTS team_members_user_idx ON team_members(member_user_id);
+CREATE INDEX IF NOT EXISTS team_members_email_idx ON team_members(email);
+CREATE UNIQUE INDEX IF NOT EXISTS team_members_token_idx ON team_members(invite_token) WHERE invite_token IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS team_activity (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  owner_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  actor_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  actor_email text NOT NULL,
+  actor_name text NOT NULL,
+  action text NOT NULL,
+  target text,
+  detail text,
+  ip text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS team_activity_owner_idx ON team_activity(owner_id, created_at DESC);
 `

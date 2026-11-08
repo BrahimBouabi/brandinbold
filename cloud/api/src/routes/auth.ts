@@ -1,6 +1,6 @@
-import { and, eq, ne, or } from 'drizzle-orm'
+import { and, eq, isNull, ne, or } from 'drizzle-orm'
 import { db } from '../db/index.js'
-import { users } from '../db/schema.js'
+import { teamMembers, users } from '../db/schema.js'
 import { hashPassword, verifyPassword, signToken, signRefreshToken, verifyRefreshToken, type TokenUser } from '../lib/auth.js'
 import {
   buildOtpAuthUri,
@@ -9,6 +9,7 @@ import {
   generateTotpSecret,
   verifyTotp
 } from '../lib/totp.js'
+import { logTeamActivity } from './team.js'
 
 export interface CloudUserDto {
   id: string
@@ -18,6 +19,8 @@ export interface CloudUserDto {
   plan: string
   maxProfiles: number
   totpEnabled: boolean
+  activeTeamOwnerId?: string | null
+  lastLoginAt?: string | null
 }
 
 export interface AuthResult {
@@ -37,7 +40,9 @@ export function toUser(u: typeof users.$inferSelect): CloudUserDto {
     name: u.name,
     plan: u.plan,
     maxProfiles: u.maxProfiles,
-    totpEnabled: !!u.totpEnabled
+    totpEnabled: !!u.totpEnabled,
+    activeTeamOwnerId: u.activeTeamOwnerId ?? null,
+    lastLoginAt: u.lastLoginAt ? u.lastLoginAt.toISOString() : null
   }
 }
 
@@ -57,7 +62,7 @@ async function resolveUniqueUsername(preferred: string): Promise<string> {
   return `${base.slice(0, 20)}_${Math.floor(1000 + Math.random() * 9000)}`
 }
 
-export async function register(email: string, name: string, password: string, username?: string): Promise<AuthResult> {
+export async function register(email: string, name: string, password: string, username?: string, ip?: string): Promise<AuthResult> {
   const existing = await db.select().from(users).where(eq(users.email, email))
   if (existing.length) throw Object.assign(new Error('Email already registered'), { statusCode: 409 })
 
@@ -74,21 +79,38 @@ export async function register(email: string, name: string, password: string, us
     finalUsername = await resolveUniqueUsername(email.split('@')[0])
   }
 
+  const now = new Date()
   const inserted = await db
     .insert(users)
     .values({
       email,
       username: finalUsername,
       name: name || email.split('@')[0],
-      passwordHash: hashPassword(password)
+      passwordHash: hashPassword(password),
+      lastLoginAt: now
     })
     .returning()
-  const u = toUser(inserted[0])
+  const row = inserted[0]
+  await db
+    .update(teamMembers)
+    .set({ memberUserId: row.id, updatedAt: now })
+    .where(and(eq(teamMembers.email, email), isNull(teamMembers.memberUserId)))
+  await logTeamActivity({
+    ownerId: row.id,
+    actorUserId: row.id,
+    actorEmail: row.email,
+    actorName: row.name,
+    action: 'auth.register',
+    target: row.email,
+    detail: 'Account created and workspace initialized',
+    ip
+  })
+  const u = toUser(row)
   const tu: TokenUser = { sub: u.id, email: u.email }
   return { token: signToken(tu), refreshToken: signRefreshToken(tu), user: u }
 }
 
-export async function login(identifier: string, password: string, totpCode?: string): Promise<AuthResult> {
+export async function login(identifier: string, password: string, totpCode?: string, ip?: string): Promise<AuthResult> {
   const cleanId = identifier.trim().toLowerCase()
   const found = await db
     .select()
@@ -118,7 +140,24 @@ export async function login(identifier: string, password: string, totpCode?: str
       await db.update(users).set({ totpBackupCodes: backup.remainingJson }).where(eq(users.id, row.id))
     }
   }
-  const u = toUser(row)
+  const now = new Date()
+  const updated = await db
+    .update(users)
+    .set({ lastLoginAt: now })
+    .where(eq(users.id, row.id))
+    .returning()
+  const effectiveRow = updated[0] ?? { ...row, lastLoginAt: now }
+  await logTeamActivity({
+    ownerId: effectiveRow.activeTeamOwnerId || effectiveRow.id,
+    actorUserId: effectiveRow.id,
+    actorEmail: effectiveRow.email,
+    actorName: effectiveRow.name,
+    action: 'auth.login',
+    target: effectiveRow.email,
+    detail: 'Signed in',
+    ip
+  })
+  const u = toUser(effectiveRow)
   const tu: TokenUser = { sub: u.id, email: u.email }
   return { token: signToken(tu), refreshToken: signRefreshToken(tu), user: u }
 }

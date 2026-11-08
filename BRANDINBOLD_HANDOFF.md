@@ -355,9 +355,12 @@ None — **Phase 1 (TASK 9) and Phase 2 (TASK 10) are complete and verified.** R
 ## 10. Configuration and Environment
 
 - **Node** v26.13.0, npm 11.20.0. **Python**: none. **Docker Desktop**: required for Étape 2.2+ verification (daemon may need manual start: `open -a Docker`).
-- **Env vars** (.env.example at root): `DATABASE_URL` (postgres conn string), `JWT_SECRET` (openssl rand -base64 48), `PORT` (api), `VITE_API_URL` (web→api), optional desktop `Brandinbold_CLOUD_API_URL`.
+- **Env vars** (.env.example at root):
+  - `DATABASE_URL` (postgres conn string), `JWT_SECRET` (`openssl rand -base64 48`), `PORT` (api), `VITE_API_URL` (web→api)
+  - Optional Team & Email env vars on `cloud/api`: `CLOUD_WEB_URL` (defaults to `https://cloud-web-production-f49c.up.railway.app`), `RESEND_API_KEY` (Resend HTTP API), `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `INVITE_FROM_EMAIL` (SMTP fallback; if neither is set, returns copyable invite link + token), `MAX_TEAM_SEATS` (overrides plan seat limits: `free=3`, `pro=10`, `team=50`)
+  - Optional Desktop override: `BRANDINBOLD_CLOUD_API_URL` (overrides default production Railway API URL `https://cloud-api-production-8852.up.railway.app`)
 - **Disk (macOS)**: repo `/Users/brahimbouabi/Documents/REVERSE ENGEN/rea-app`; app data `~/Library/Application Support/Brandinbold/` (rea.db, profiles/, launchers/, badge-extensions/, backups/, **engine/ 2.7 GB**); symlink `~/Library/Caches/camoufox` → engine. Windows: `%APPDATA%/Brandinbold/`; Linux: `~/.local/share/Brandinbold/`, cache `~/.cache/camoufox`.
-- **Signing**: ad-hoc (`identity: null`) — no Developer ID, no notarization; Gatekeeper right-click → Open on first launch.
+- **Signing**: ad-hoc (`identity: null`, `scripts/after-pack.cjs` strips xattrs and signs inner frameworks/bundles + outer `.app`).
 
 ---
 
@@ -380,17 +383,21 @@ npm run package:offline             # Fat DMG 1.4 GB → release/Brandinbold-0.1
 
 ### Cloud stack (Docker — verified)
 ```bash
-docker compose up -d --build        # postgres + api(:8787) + web(:5173)
-node scripts/test-cloud.mjs         # acceptance — last run: 16/16 PASS
+docker compose up -d --build        # postgres + api(:8787) + web(:5180)
+node scripts/test-cloud.mjs         # Step 1 + Cloud API acceptance — 29/29 PASS
+node scripts/test-step5-team.mjs    # Step 5 Team Management & RBAC — 35/35 PASS
 ```
 
-### Other tests (verified)
+### Full Regression Test Suite (verified)
 ```bash
-npm run typecheck                   # node + web configs
-node scripts/test-os-matrix.mjs     # 9/9 PASS
-node scripts/test-session-restore.mjs
-node scripts/test-cache-purge.mjs   # TASK 9 — PASS
-node scripts/test-fingerprint.mjs   # needs ≥1 profile with pinned fp
+npm run typecheck                             # node + web TypeScript configs
+npx electron-vite build                       # main + preload + renderer bundle
+node scripts/test-cloud.mjs                   # 29/29 PASS (auth, username, strong pw, TOTP 2FA, backup codes, rate limit, partial quota sync BUG-009)
+node scripts/test-step2-groups-trash.mjs      # 5/5 PASS (groups CRUD, deleteGroup JSON cleanup, soft-delete Trash, restore, 30-day auto-purge)
+node scripts/test-step3-actions-csv.mjs       # 4/4 PASS (72-col CSV lossless round-trip, per-row validation, bookmarks SQLite, unlaunched backup)
+node scripts/test-step4-session-restore.mjs   # 4/4 PASS (local 3-tab restore, consecutive stop/start, recovery.baklz4 rescue, cloud session roam)
+node scripts/test-step5-team.mjs              # 35/35 PASS (Members, Roles RBAC, Activity audit log, expiring tokens, Resend/SMTP/link fallback, seat quotas)
+node scripts/test-cache-purge.mjs             # TASK 9 — PASS
 ```
 
 ---

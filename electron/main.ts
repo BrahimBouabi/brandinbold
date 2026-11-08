@@ -663,6 +663,53 @@ ipcMain.handle('profiles:pushNow', async () => {
   return true
 })
 
+// ---------- team (Step 5) ----------
+function assertCloudSignedIn(): void {
+  if (!cloudAuthed()) {
+    throw new Error('Sign in to Brandinbold Cloud to access Team Management')
+  }
+}
+ipcMain.handle('team:get', async (_e, search?: string) => {
+  assertCloudSignedIn()
+  return await cloudClient().team.get(search)
+})
+ipcMain.handle('team:invite', async (_e, payload: { email: string; role: string; expiresInDays?: number }) => {
+  assertCloudSignedIn()
+  return await cloudClient().team.invite(payload)
+})
+ipcMain.handle('team:resend', async (_e, memberId: string) => {
+  assertCloudSignedIn()
+  return await cloudClient().team.resend(memberId)
+})
+ipcMain.handle('team:revoke', async (_e, memberId: string) => {
+  assertCloudSignedIn()
+  return await cloudClient().team.revoke(memberId)
+})
+ipcMain.handle('team:updateRole', async (_e, memberId: string, role: string) => {
+  assertCloudSignedIn()
+  return await cloudClient().team.updateRole(memberId, role)
+})
+ipcMain.handle('team:remove', async (_e, memberId: string) => {
+  assertCloudSignedIn()
+  return await cloudClient().team.remove(memberId)
+})
+ipcMain.handle('team:acceptInvite', async (_e, token: string) => {
+  assertCloudSignedIn()
+  const res = await cloudClient().team.acceptInvite(token)
+  await refreshCloudUser()
+  await cloudPullAndMerge()
+  push('cloud-event', '', 'synced')
+  return res
+})
+ipcMain.handle('team:switchWorkspace', async (_e, ownerId: string) => {
+  assertCloudSignedIn()
+  const res = await cloudClient().team.switchWorkspace(ownerId)
+  await refreshCloudUser()
+  await cloudPullAndMerge()
+  push('cloud-event', '', 'synced')
+  return res
+})
+
 // ---------- system ----------
 ipcMain.handle('system:info', () => ({
   apiPort: api?.currentPort ?? null,

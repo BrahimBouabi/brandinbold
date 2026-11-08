@@ -12,6 +12,8 @@ export interface CloudUser {
   plan: string
   maxProfiles: number
   totpEnabled?: boolean
+  activeTeamOwnerId?: string | null
+  lastLoginAt?: string | null
 }
 
 export interface RejectedProfile {
@@ -138,6 +140,27 @@ export function createCloudClient(cfg: CloudClientConfig) {
       } catch {
         return null
       }
+    },
+    team: {
+      get: (search?: string) =>
+        request(`/api/team${search ? `?search=${encodeURIComponent(search)}` : ''}`),
+      invite: (payload: { email: string; role: string; expiresInDays?: number }) =>
+        request('/api/team/invite', { method: 'POST', body: JSON.stringify(payload) }),
+      resend: (memberId: string) =>
+        request(`/api/team/members/${encodeURIComponent(memberId)}/resend`, { method: 'POST' }),
+      revoke: (memberId: string) =>
+        request(`/api/team/members/${encodeURIComponent(memberId)}/revoke`, { method: 'POST' }),
+      updateRole: (memberId: string, role: string) =>
+        request(`/api/team/members/${encodeURIComponent(memberId)}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ role })
+        }),
+      remove: (memberId: string) =>
+        request(`/api/team/members/${encodeURIComponent(memberId)}`, { method: 'DELETE' }),
+      acceptInvite: (token: string) =>
+        request('/api/team/accept', { method: 'POST', body: JSON.stringify({ token }) }),
+      switchWorkspace: (ownerId: string) =>
+        request('/api/team/switch-workspace', { method: 'POST', body: JSON.stringify({ ownerId }) })
     }
   }
 }

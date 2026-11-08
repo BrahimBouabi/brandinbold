@@ -16,6 +16,8 @@ export const users = pgTable('users', {
   totpSecret: text('totp_secret'),
   totpEnabled: boolean('totp_enabled').notNull().default(false),
   totpBackupCodes: text('totp_backup_codes'),
+  activeTeamOwnerId: uuid('active_team_owner_id'),
+  lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 })
 
@@ -60,4 +62,34 @@ export const sessionArchives = pgTable('session_archives', {
   data: bytea('data').notNull(),
   size: integer('size').notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+})
+
+/** STEP 5: Team members & invitations */
+export const teamMembers = pgTable('team_members', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  ownerId: uuid('owner_id').notNull(),
+  memberUserId: uuid('member_user_id'),
+  email: text('email').notNull(),
+  role: text('role').notNull().default('member'), // 'admin' | 'member' | 'viewer'
+  status: text('status').notNull().default('pending'), // 'pending' | 'active' | 'revoked' | 'expired'
+  inviteToken: text('invite_token'),
+  inviteExpiresAt: timestamp('invite_expires_at', { withTimezone: true }),
+  invitedByUserId: uuid('invited_by_user_id'),
+  joinedAt: timestamp('joined_at', { withTimezone: true }),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
+})
+
+/** STEP 5: Team activity & security audit log */
+export const teamActivity = pgTable('team_activity', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  ownerId: uuid('owner_id').notNull(),
+  actorUserId: uuid('actor_user_id'),
+  actorEmail: text('actor_email').notNull(),
+  actorName: text('actor_name').notNull(),
+  action: text('action').notNull(),
+  target: text('target'),
+  detail: text('detail'),
+  ip: text('ip'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 })

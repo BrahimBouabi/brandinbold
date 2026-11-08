@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Button, Card, QRCode, Statistic, Tag, Typography, message } from 'antd'
+import { Alert, Button, Card, QRCode, Select, Space, Statistic, Table, Tabs, Tag, Typography, message } from 'antd'
 import { BrandLogo } from '../components/Logo'
 import { api, logout, storedUser, type CloudUser } from '../api'
 
@@ -18,16 +18,29 @@ export function Dashboard({ onNav }: { onNav: (r: string) => void }) {
   const [disablePw, setDisablePw] = useState('')
   const [showDisable2fa, setShowDisable2fa] = useState(false)
 
+  // Team state
+  const [team, setTeam] = useState<any | null>(null)
+  const [teamSearch, setTeamSearch] = useState('')
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [inviteRole, setInviteRole] = useState<'admin' | 'member' | 'viewer'>('member')
+  const [inviteResult, setInviteResult] = useState<any | null>(null)
+  const [inviteTokenInput, setInviteTokenInput] = useState(() => sessionStorage.getItem('bb_pending_invite_token') ?? '')
+
+  const loadDashboard = async () => {
+    const me = await api.me()
+    setUser(me.user)
+    setName(me.user.name ?? '')
+    setUsername(me.user.username ?? '')
+    localStorage.setItem('bb_user', JSON.stringify(me.user))
+    const [pull, teamRes] = await Promise.all([api.pull(), api.team.get()])
+    setCounts({ profiles: pull.profiles.length, groups: pull.groups.length, proxies: pull.proxies.length })
+    setTeam(teamRes)
+  }
+
   useEffect(() => {
     void (async () => {
       try {
-        const me = await api.me()
-        setUser(me.user)
-        setName(me.user.name ?? '')
-        setUsername(me.user.username ?? '')
-        localStorage.setItem('bb_user', JSON.stringify(me.user))
-        const pull = await api.pull()
-        setCounts({ profiles: pull.profiles.length, groups: pull.groups.length, proxies: pull.proxies.length })
+        await loadDashboard()
       } catch (e: any) {
         if (e.statusCode === 401) {
           logout()
@@ -355,6 +368,370 @@ export function Dashboard({ onNav }: { onNav: (r: string) => void }) {
               )}
             </div>
           )}
+        </Card>
+
+        {/* Team Management Card (Members / Roles / Activity) */}
+        <Card style={{ background: '#15171d', border: '1px solid rgba(255,255,255,0.07)', marginBottom: 18 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
+            <Space>
+              <Typography.Title level={5} style={{ color: '#fff', margin: 0 }}>
+                Team Management
+              </Typography.Title>
+              {team?.workspace && (
+                <>
+                  <Tag color="purple">{team.workspace.myRole.toUpperCase()}</Tag>
+                  <Tag>
+                    Seats: {team.workspace.activeSeats} / {team.workspace.maxSeats}
+                  </Tag>
+                </>
+              )}
+            </Space>
+            {team?.availableWorkspaces?.length > 1 && (
+              <Select
+                size="small"
+                value={team.workspace.ownerId}
+                style={{ minWidth: 220 }}
+                onChange={async (ownerId: string) => {
+                  try {
+                    await api.team.switchWorkspace(ownerId)
+                    message.success('Switched workspace')
+                    await loadDashboard()
+                  } catch (e: any) {
+                    message.error(e.message)
+                  }
+                }}
+                options={team.availableWorkspaces.map((w: any) => ({
+                  value: w.ownerId,
+                  label: `${w.ownerName} (${w.role.toUpperCase()})`
+                }))}
+              />
+            )}
+          </div>
+
+          {/* Pending invitation banner or token input */}
+          {(inviteTokenInput || (team?.pendingInvitesForMe?.length ?? 0) > 0) && (
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 14 }}
+              message="Accept Team Invitation"
+              description={
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
+                  <input
+                    value={inviteTokenInput || team?.pendingInvitesForMe?.[0]?.inviteToken || ''}
+                    onChange={(e) => setInviteTokenInput(e.target.value)}
+                    placeholder="Paste invite token"
+                    style={{ ...inputStyle, maxWidth: 360, fontFamily: 'monospace' }}
+                  />
+                  <Button
+                    type="primary"
+                    size="small"
+                    loading={busy}
+                    onClick={async () => {
+                      const tok = (inviteTokenInput || team?.pendingInvitesForMe?.[0]?.inviteToken || '').trim()
+                      if (!tok) return
+                      setBusy(true)
+                      try {
+                        await api.team.acceptInvite(tok)
+                        sessionStorage.removeItem('bb_pending_invite_token')
+                        setInviteTokenInput('')
+                        message.success('Joined team workspace!')
+                        await loadDashboard()
+                      } catch (e: any) {
+                        message.error(e.message)
+                      } finally {
+                        setBusy(false)
+                      }
+                    }}
+                  >
+                    Accept & Join Team
+                  </Button>
+                </div>
+              }
+            />
+          )}
+
+          {team?.workspace?.permissions?.manageTeam && (
+            <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+              <input
+                value={inviteEmail}
+                onChange={(e) => setInviteEmail(e.target.value)}
+                placeholder="Invite member by email (e.g. teammate@domain.com)"
+                style={{ ...inputStyle, maxWidth: 320 }}
+              />
+              <Select
+                value={inviteRole}
+                onChange={(v) => setInviteRole(v)}
+                style={{ width: 140 }}
+                options={[
+                  { value: 'admin', label: 'Admin' },
+                  { value: 'member', label: 'Member' },
+                  { value: 'viewer', label: 'Viewer' }
+                ]}
+              />
+              <Button
+                type="primary"
+                loading={busy}
+                onClick={async () => {
+                  setBusy(true)
+                  try {
+                    const res = await api.team.invite({ email: inviteEmail, role: inviteRole })
+                    setInviteResult(res)
+                    setInviteEmail('')
+                    message.success('Invitation created')
+                    await loadDashboard()
+                  } catch (e: any) {
+                    message.error(e.message)
+                  } finally {
+                    setBusy(false)
+                  }
+                }}
+              >
+                + Invite member
+              </Button>
+            </div>
+          )}
+
+          {inviteResult?.inviteUrl && (
+            <Alert
+              type="success"
+              closable
+              onClose={() => setInviteResult(null)}
+              style={{ marginBottom: 14 }}
+              message={
+                inviteResult.emailSent
+                  ? `Email sent via ${String(inviteResult.emailProvider).toUpperCase()}`
+                  : 'Copyable Invite Link Ready'
+              }
+              description={
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
+                  <code style={{ background: '#0d0f13', padding: '6px 10px', borderRadius: 6, fontSize: 12 }}>
+                    {inviteResult.inviteUrl}
+                  </code>
+                  <Button
+                    size="small"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(inviteResult.inviteUrl)
+                      message.success('Invite link copied')
+                    }}
+                  >
+                    Copy Link
+                  </Button>
+                  <Button
+                    size="small"
+                    onClick={() => {
+                      void navigator.clipboard.writeText(inviteResult.inviteToken)
+                      message.success('Invite token copied')
+                    }}
+                  >
+                    Copy Token
+                  </Button>
+                </div>
+              }
+            />
+          )}
+
+          <Tabs
+            items={[
+              {
+                key: 'members',
+                label: `Members (${team?.members?.length ?? 0})`,
+                children: (
+                  <div>
+                    <div style={{ marginBottom: 10, maxWidth: 280 }}>
+                      <input
+                        value={teamSearch}
+                        onChange={(e) => setTeamSearch(e.target.value)}
+                        placeholder="Search members..."
+                        style={{ ...inputStyle, width: '100%' }}
+                      />
+                    </div>
+                    <Table
+                      size="small"
+                      rowKey="id"
+                      pagination={{ pageSize: 8, hideOnSinglePage: true }}
+                      dataSource={(team?.members ?? []).filter((m: any) => {
+                        if (!teamSearch.trim()) return true
+                        const q = teamSearch.toLowerCase()
+                        return m.email.toLowerCase().includes(q) || (m.name || '').toLowerCase().includes(q) || m.role.toLowerCase().includes(q)
+                      })}
+                      columns={[
+                        {
+                          title: 'Member',
+                          key: 'member',
+                          render: (_: any, r: any) => (
+                            <div>
+                              <div style={{ fontWeight: 600 }}>{r.name}</div>
+                              <div style={{ fontSize: 12, color: '#9aa3af' }}>{r.email}</div>
+                            </div>
+                          )
+                        },
+                        {
+                          title: 'Role',
+                          key: 'role',
+                          render: (_: any, r: any) =>
+                            team?.workspace?.permissions?.manageTeam && !r.isOwner ? (
+                              <Select
+                                size="small"
+                                value={r.role}
+                                style={{ width: 110 }}
+                                onChange={async (role: string) => {
+                                  try {
+                                    await api.team.updateRole(r.id, role)
+                                    message.success('Role updated')
+                                    await loadDashboard()
+                                  } catch (e: any) {
+                                    message.error(e.message)
+                                  }
+                                }}
+                                options={[
+                                  { value: 'admin', label: 'Admin' },
+                                  { value: 'member', label: 'Member' },
+                                  { value: 'viewer', label: 'Viewer' }
+                                ]}
+                              />
+                            ) : (
+                              <Tag color="purple">{String(r.role).toUpperCase()}</Tag>
+                            )
+                        },
+                        {
+                          title: 'Status',
+                          dataIndex: 'status',
+                          render: (s: string) => (
+                            <Tag color={s === 'active' ? 'success' : s === 'pending' ? 'gold' : 'default'}>
+                              {String(s).toUpperCase()}
+                            </Tag>
+                          )
+                        },
+                        {
+                          title: 'Last Login',
+                          dataIndex: 'lastLoginAt',
+                          render: (v: string | null) => (
+                            <span style={{ fontSize: 12, color: '#9aa3af' }}>
+                              {v ? new Date(v).toLocaleString() : 'Never'}
+                            </span>
+                          )
+                        },
+                        {
+                          title: 'Actions',
+                          key: 'actions',
+                          render: (_: any, r: any) => {
+                            if (r.isOwner || !team?.workspace?.permissions?.manageTeam) return '—'
+                            return (
+                              <Space size={6}>
+                                {r.inviteUrl && r.status === 'pending' && (
+                                  <Button
+                                    size="small"
+                                    onClick={() => {
+                                      void navigator.clipboard.writeText(r.inviteUrl)
+                                      message.success('Invite link copied')
+                                    }}
+                                  >
+                                    Copy Link
+                                  </Button>
+                                )}
+                                {r.status !== 'active' && (
+                                  <Button
+                                    size="small"
+                                    onClick={async () => {
+                                      const res = await api.team.resend(r.id)
+                                      setInviteResult(res)
+                                      message.success('Invite renewed')
+                                      await loadDashboard()
+                                    }}
+                                  >
+                                    Resend
+                                  </Button>
+                                )}
+                                {r.status === 'pending' && (
+                                  <Button
+                                    size="small"
+                                    danger
+                                    onClick={async () => {
+                                      await api.team.revoke(r.id)
+                                      message.success('Invite revoked')
+                                      await loadDashboard()
+                                    }}
+                                  >
+                                    Revoke
+                                  </Button>
+                                )}
+                                <Button
+                                  size="small"
+                                  danger
+                                  onClick={async () => {
+                                    await api.team.remove(r.id)
+                                    message.success('Member removed')
+                                    await loadDashboard()
+                                  }}
+                                >
+                                  Remove
+                                </Button>
+                              </Space>
+                            )
+                          }
+                        }
+                      ]}
+                    />
+                  </div>
+                )
+              },
+              {
+                key: 'roles',
+                label: 'Roles',
+                children: (
+                  <Table
+                    size="small"
+                    rowKey="id"
+                    pagination={false}
+                    dataSource={team?.roles ?? []}
+                    columns={[
+                      { title: 'Role', dataIndex: 'name', render: (v: string) => <strong>{v}</strong> },
+                      { title: 'Description', dataIndex: 'description' },
+                      {
+                        title: 'Write Profiles',
+                        key: 'w',
+                        render: (_: any, r: any) => (r.permissions.writeProfiles ? <Tag color="success">Yes</Tag> : <Tag>No</Tag>)
+                      },
+                      {
+                        title: 'Delete Profiles',
+                        key: 'd',
+                        render: (_: any, r: any) => (r.permissions.deleteProfiles ? <Tag color="success">Yes</Tag> : <Tag>No</Tag>)
+                      },
+                      {
+                        title: 'Manage Team',
+                        key: 'm',
+                        render: (_: any, r: any) => (r.permissions.manageTeam ? <Tag color="success">Yes</Tag> : <Tag>No</Tag>)
+                      }
+                    ]}
+                  />
+                )
+              },
+              {
+                key: 'activity',
+                label: `Activity (${team?.activity?.length ?? 0})`,
+                children: (
+                  <Table
+                    size="small"
+                    rowKey="id"
+                    pagination={{ pageSize: 10, hideOnSinglePage: true }}
+                    dataSource={team?.activity ?? []}
+                    columns={[
+                      {
+                        title: 'Time',
+                        dataIndex: 'createdAt',
+                        render: (v: string) => <span style={{ fontSize: 12, color: '#9aa3af' }}>{new Date(v).toLocaleString()}</span>
+                      },
+                      { title: 'Actor', dataIndex: 'actorEmail' },
+                      { title: 'Event', dataIndex: 'action', render: (v: string) => <Tag color="purple">{v}</Tag> },
+                      { title: 'Target', dataIndex: 'target' },
+                      { title: 'Detail', dataIndex: 'detail' }
+                    ]}
+                  />
+                )
+              }
+            ]}
+          />
         </Card>
       </div>
     </div>

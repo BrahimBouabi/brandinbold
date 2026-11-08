@@ -33,6 +33,13 @@ node_modules, DMGs, versions/, engine-bundle and env files).
   | `DATABASE_URL` | `${{PostgreSQL.DATABASE_URL}}` (reference to service 1) |
   | `JWT_SECRET` | `openssl rand -base64 48` output |
   | `PORT` | leave empty — Railway injects it |
+  | `CLOUD_WEB_URL` | *(optional)* public URL of `cloud/web` (defaults to `https://cloud-web-production-f49c.up.railway.app` for invite links) |
+  | `RESEND_API_KEY` | *(optional)* Resend API key (`re_...`) for sending team invite emails |
+  | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` | *(optional)* SMTP credentials for sending team invite emails if `RESEND_API_KEY` is not set |
+  | `INVITE_FROM_EMAIL` | *(optional)* Sender address for team invite emails (defaults to `Brandinbold <noreply@brandinbold.app>`) |
+  | `MAX_TEAM_SEATS` | *(optional)* Override plan seat quota (defaults: `free=3`, `pro=10`, `team=50`) |
+- Note: If neither `RESEND_API_KEY` nor `SMTP_HOST` is configured, team invitations automatically fall back to returning a **copyable invite link (`#/invite?token=...`) and invite token** in the Web Dashboard and Desktop App.
+- Boot migrations (`cloud/api/src/db/migrate.ts`) are idempotent and automatically create/alter `users` (`username`, `totp_secret`, `totp_enabled`, `totp_backup_codes`, `active_team_owner_id`, `last_login_at`), `profiles`, `groups`, `proxies`, `session_archives`, `team_members`, and `team_activity`.
 - Settings → Networking → **Generate Domain** → note the public URL
   (e.g. `https://brandinbold-api.up.railway.app`)
 - Settings → **Config-as-code path**: `/cloud/api/railway.json` (Railway does

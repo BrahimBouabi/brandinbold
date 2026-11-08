@@ -130,6 +130,19 @@ const api = {
     setApiUrl: (url: string): Promise<{ apiUrl: string; webUrl: string; signedOut: boolean }> =>
       ipcRenderer.invoke('cloud:setApiUrl', url)
   },
+  team: {
+    get: (search?: string): Promise<any> => ipcRenderer.invoke('team:get', search),
+    invite: (payload: { email: string; role: string; expiresInDays?: number }): Promise<any> =>
+      ipcRenderer.invoke('team:invite', payload),
+    resend: (memberId: string): Promise<any> => ipcRenderer.invoke('team:resend', memberId),
+    revoke: (memberId: string): Promise<any> => ipcRenderer.invoke('team:revoke', memberId),
+    updateRole: (memberId: string, role: string): Promise<any> =>
+      ipcRenderer.invoke('team:updateRole', memberId, role),
+    remove: (memberId: string): Promise<any> => ipcRenderer.invoke('team:remove', memberId),
+    acceptInvite: (token: string): Promise<any> => ipcRenderer.invoke('team:acceptInvite', token),
+    switchWorkspace: (ownerId: string): Promise<any> =>
+      ipcRenderer.invoke('team:switchWorkspace', ownerId)
+  },
   onProfileEvent: (cb: (event: any) => void) => {
     const listener = (_e: unknown, event: any) => cb(event)
     ipcRenderer.on('profile-event', listener)

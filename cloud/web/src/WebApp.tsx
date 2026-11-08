@@ -8,7 +8,13 @@ import { token, storedUser } from './api'
 type Route = 'landing' | 'login' | 'register' | 'app'
 
 function routeFromHash(): Route {
-  const h = window.location.hash.replace('#/', '')
+  const raw = window.location.hash.replace('#/', '')
+  if (raw.startsWith('invite')) {
+    const match = raw.match(/[?&]token=([a-f0-9]+)/i)
+    if (match) sessionStorage.setItem('bb_pending_invite_token', match[1])
+    return token() && storedUser() ? 'app' : 'login'
+  }
+  const h = raw.split('?')[0]
   return (['landing', 'login', 'register', 'app'] as const).includes(h as Route) ? (h as Route) : 'landing'
 }
 
